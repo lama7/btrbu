@@ -1,0 +1,26 @@
+return {
+    subvolumes = {
+        lama7 = "/home/lama7",
+        lama7Maildir = "/home/lama7/Maildir",
+        cnkl77 = "/home/cnkl77",
+        cnkl77Maildir = "/home/cnkl77/Maildir",
+        corinne = "/home/corinne",
+        corinneMaildir = "/home/corinne/Maildir",
+        keenan = "/home/keenan",
+        keenanMaildir = "/home/keenan/Maildir",
+        root = "/root",
+        clouddata = "/usr/local/cloud/data",
+        cloudCorinne = "/usr/local/cloud/data/Corinne",
+        cloudKeenan = "/usr/local/cloud/data/Keenan",
+        cloudChristine = "/usr/local/cloud/data/Christine",
+        cloudGerry = "/usr/local/cloud/data/Gerry",
+    },
+
+    snapshot_dir = "/pool/snapshots",
+    backup_dir = "/backup",
+
+    -- for snapshots
+    keep_daily = 1,
+    keep_weekly = 1,
+    keep_monthly = 1,
+}

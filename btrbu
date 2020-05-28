@@ -1,0 +1,616 @@
+#!/usr/bin/env lua
+
+-- system requires
+local io = require("io")
+local math = require("math")
+local os = require("os")
+local table = table -- for faster access
+
+-- local requires
+local seconds_per_day = 86400
+local seconds_per_week = 604800
+
+usage = {
+[[
+Usage:  btrbu [OPTIONS] [archive1=/path/to/subvolume1] [archive2=/path/to/subvolume2] ...
+]],
+[[
+btrbu is a program to create and manage snapshots and backups for btrfs
+subvolumes.  Minimally, it requires a snapshot destination path, a backup
+destination path, and a list of source volumes to take snapshots of and backup.
+These can all be supplied on the command line or in a config file.  Names for 
+the snapshots and backups must be supplied- btrbu will append a
+timestamp to the name to create the snapshot/backup. 
+]],
+[[
+If no archive/subvolume pairs are specified on the command line, btrbu will look
+for them in a config file.  The default config file is "~/.config/btrbu-conf" 
+but the user can specify a particular file with the "--config" option.  If there
+are no archive/subvolume pairs specified in a config file, then there is nothing
+to do and the user gets this message.  Command line archive/subvolume pairs take
+precedence and prevent operations on archive/subvolume pairs specified in a
+config file.  NO ATTEMPT IS MADE TO RECONCILE BETWEEN THE COMMAND LINE AND
+CONFIG FILE FOR ARCHIVE/SUBVOLUME PAIRS, BEHAVIOR IS EITHER/OR.
+]],
+[[
+All command line options can also be specified in a config file.  In the case
+where an option is defined both on the command line and in the config file,
+btrbu defaults to using the command line.
+]],
+[[
+Options:
+]],
+}
+usage_length = #usage
+
+-- table of valid options 
+local btrbu_opts = {
+    snapshot_dir = [[
+Path to destination for snapshots
+]],
+    backup_dir = [[
+Path to location for backups.  For now, it is assumed that the destination is a
+btrfs based filesystem.
+]],
+    config = [[
+Path to a configuration file.
+]],
+    snaps_only = [[
+If specified only snapshots will be taken, no backups will be used.
+]],
+    keep_daily = [[
+Number of daily backups to be kept. Dailies kept have 24 hours between them.
+]],
+    keep_weekly = [[
+Number of weeklys backups to be kept. Weeklies kept have (7*24) hours between
+them.
+]],
+    keep_monthly = [[
+Number of monthly backups to be kept.  Monthlies kept have (4*7*24) hours
+between them.
+]],
+    help = [[
+Display this useful information.  The help option prevents execution of any
+operations, why would you be specifiying help, otherwise?
+]]
+}
+
+local runtime = {}
+runtime.subvolumes = {}
+local options = {}
+
+-- do some rudimentary command line parsing
+--[[
+    Options are denoted by a '--' prefix and are of the form "--option" or
+    "--option=value"
+    Archive/subvolume pairs are of the form "archive=subvolume"
+    We try to remove remove white space if it is used when the command is
+    invoked
+    Also, order must be options followed by archive/subvolume pairs
+--]]
+local i = 1
+local o = 1
+while i <= #arg do
+    local m = arg[i]:match("^%-%-(.+)")
+    -- is this the start of an option argument? (leading '--')
+    if o and m then
+        options[o] = m
+        i = i + 1
+        if not arg[i] then break end;
+        -- check if there's a trailing '='
+        if m:match(".+=$") then
+            -- yes, so grab next argument, stuff it and loop
+            if not arg[i] then
+                print("Argument parsing error at: "..options[o])
+            end
+            options[o] = options[o]..arg[i]
+            i = i + 1
+            o = o + 1
+        -- does current match have a '='?
+        elseif not m:find("=") then
+            -- 2 possibilities- next arg could have the '=' or it can be 
+            -- a new option
+            -- chk for leading '='...
+            if arg[i]:find("^=.*") then
+                -- next arg has a leading '=', so it's either alone or already
+                -- part of the value string
+                if arg[i] == '=' then 
+                    -- alone, so stuff it and then grab the next argument
+                    options[o] = options[o]..'='
+                    i = i + 1
+                    -- make sure there is a next argument...
+                    if not arg[i] then 
+                        print("Argument parsing error at: "..options[o])
+                        return
+                    end
+                end
+                options[o] = options[o]..arg[i]
+                i = i + 1
+                o = o + 1
+            -- chk for leading '--'...
+            elseif arg[i]:find("^%-%-.*") then
+                o = o + 1
+            else
+                -- next arg doesn't have '=' and isn't another option, so it
+                -- must be the first archive/subvolume pair
+                o = nil
+            end
+        else
+            -- option match had an '=' in it, so stuff it and on to the next
+            -- option
+            o = o + 1
+        end -- elseif not m:find...
+    else
+        -- not a leading '--' so we're looking for "archive=subvolume"
+        -- variants, also- no more options allowed after this
+        if m then
+            print("Argument error- "..m)
+            print("ALL options must precede archive/subvolume pairs.")
+            return
+        end
+        
+        if arg[i]:find("=") then
+            m,v = arg[i]:match("^(.+)=(.+)$")
+            if m then
+                runtime.subvolumes[m] = v
+                i = i + 1
+            else
+                m = arg[i]:match("^(.+)=$") 
+                if m then
+                    i = i + 1
+                    if not arg[i] then
+                        print("No subvolume specified for archive: "..m)
+                        return
+                    end
+                    runtime.subvolumes[m] = arg[i]
+                    i = i + 1
+                else
+                    print("No archive specified for subvolume: "..arg[i])
+                    return
+                end
+            end
+        else
+            -- no '=' here, assume this is the archive name
+            local archive = arg[i]
+            i = i + 1
+            if not arg[i] then
+                print("No subvolume specified for archive: "..archive)
+                return
+            end
+
+            -- now find the rest of the archive/subvolume pair
+            if not arg[i]:find("=") then
+                print("No subvolume specified for archive: "..archive)
+                return
+            end
+            if arg[i] == "=" then
+                -- just an '=' sign, so grab the next argument
+                i = i + 1
+                if not arg[i] then
+                    print("No subvolume specified for archive: "..archive)
+                    return
+                end
+                runtime.subvolumes[archive] = arg[i]
+                i = i + 1
+            else
+                m = arg[i]:match("^=(.+)")
+                if m then
+                    runtime.subvolumes[archive] = m
+                    i = i + 1
+                else
+                    print("Argument error: "..arg[i])
+                    return
+                end
+            end    
+        end
+    end -- if o and m...
+end -- while...
+
+-- now setup runtime options
+-- start with the options from the command line
+if #options ~= 0 then
+    for _,opt in ipairs(options) do
+        -- must parse out option and value....
+        if not opt:find("=") then
+            -- just a switch
+            if btrbu_opts[opt] then
+                runtime[opt] = 1
+            else
+                print("Invalid Option: "..opt)
+                return
+            end
+        else
+            local k,v = opt:match("^([%w%-_]+)=(.+)$") 
+            if k and btrbu_opts[k] then
+                runtime[k] = v
+            else
+                print("Invalid Option: "..opt)
+                return
+            end
+        end
+    end
+end
+
+ --[[ for debug...
+print("options:")
+for _,v in ipairs(options) do print(v) end
+print("runtime:")
+for k,v in pairs(runtime) do
+    print(k,v)
+end
+print("subvolumes:")
+for k,v in pairs(runtime.subvolumes) do
+    print(k,v)
+end
+ --]]
+
+-- to keep this straight forward... if user specifies a config file
+-- use that, if not, look for "~/.config/btrbu-conf
+local cf = ""
+if runtime.config then 
+    local m = runtime.config:match("^~(.+)$")
+    if m then
+        cf = os.getenv("HOME")..m
+    else
+        cf = runtime.config
+    end
+else
+    cf = os.getenv("HOME").."/.config/btrbu-conf"
+end
+-- try to load the config file
+local settings, err = loadfile(cf)
+-- now setup runtime config
+-- if there is a conflict between command line and config file, use command line
+-- if "archive=subvolume" specified on command line, only work with those 
+-- supplied on command line.  DO NOT TRY TO RECONCILE COMMAND LINE WITH CONFIG
+-- FILE FOR THIS.  IT'S ONE OR THE OTHER.
+if settings then
+    local cf_settings = settings()
+    -- setup the subvolumes- subvolumes defined on command line override those
+    -- in the config file; otherwise, add the entry
+    if next(runtime.subvolumes) == nil then
+        -- if table is empty, no command line settings for subvolumes, so just
+        -- grab the whole table from config file
+        runtime.subvolumes = cf_settings.subvolumes
+    end
+    -- go through and setup config file settings- if the option was already 
+    -- setup on the command line, leave it
+    if not runtime.snapshot_dir then
+        runtime.snapshot_dir = cf_settings.snapshot_dir
+    end
+    if not runtime.backup_dir then
+        runtime.backup_dir = cf_settings.backup_dir
+    end
+
+    if not runtime.keep_daily then
+        runtime.keep_daily = cf_settings.keep_daily or 1
+    end
+    if not runtime.keep_weekly then 
+        runtime.keep_weekly = cf_settings.keep_weekly or 0
+    end
+    if not runtime.keep_monthly then
+        runtime.keep_monthly = cf_settings.keep_monthly or 0
+    end
+    if not runtime.snaps_only then
+        runtime.snaps_only = cf_settings.snaps_only
+    end
+end
+
+-- Sanity check- command line options and config file, if it exists, have been
+-- processed.  In order to try to do anything, we need a snapshot destination,
+-- and backup destination and some subvolumes to snapshot/backup.
+-- ... OR ...
+-- If the "--snaps_only" option is set then we need a snapshot destination and a
+-- list of subvolumes to snapshot.
+-- Also, the "--help" option is an override of sorts.  If that option was listed
+-- on the command line, we display the usage text and exit.  Don't perform any
+-- actions, even if we have enough to do so.
+if ( not runtime.snapshot_dir or 
+     not runtime.backup_dir or 
+     next(runtime.subvolumes) == nil) or 
+   ( runtime.snaps_only and 
+     ( not runtime.snapshot_dir or next(runtime.subvolumes) == nil ) ) or 
+   runtime.help then
+       -- DISPLAY USAGE TEXT AND EXIT
+       -- we need to create a sorted table first...
+       local sorted_opts = {}
+       for k,_ in pairs(btrbu_opts) do table.insert(sorted_opts, k) end
+       table.sort(sorted_opts)
+       -- build the option text here prior to printing usage info
+       for _, k in ipairs(sorted_opts) do
+           local s = "  --"..k
+           table.insert(usage, s..string.rep(" ", 18-s:len())..btrbu_opts[k])
+       end
+       -- get current terminal width
+       local fd = io.popen("tput cols")
+       local cols = fd:read("*a")
+       fd:close()
+       cols = tonumber(cols) - 1
+       -- now go through the individual entries and fix them to the terminal width
+       for i,v in ipairs(usage) do 
+           -- remove all linefeeds
+           local fixed_text = usage[i]:gsub("[\r\n]", " ")
+           -- now format to the terminal width
+           local length = fixed_text:len()
+           if length > cols then
+               -- insert linefeeds as needed
+               local j = 1
+               local s = ""
+               repeat
+                   local adjusted = cols
+                   if i > usage_length and s ~= "" then adjusted = adjusted - 18 end
+                   while fixed_text:sub(j+adjusted, j+adjusted) ~= " " do
+                       adjusted = adjusted - 1
+                   end
+                   if j+adjusted+1 >= length then
+                       s = s..fixed_text:sub(j, j+adjusted)
+                   else
+                       s = s..fixed_text:sub(j, j+adjusted).."\n"
+                   end
+                   if i > usage_length then s = s..string.rep(" ",18) end
+                   j = j+adjusted+1
+               until j >= length
+               fixed_text = s
+           end
+           if i < usage_length then fixed_text = fixed_text.."\n" end
+           print(fixed_text)
+       end
+   return -- exit program
+end
+
+-- ########################################
+-- btrfs command functions
+
+--[[
+
+--]]
+function doit(cmd)
+    print(cmd)
+    fd = io.popen(cmd)
+    local rs = fd:read("*a")
+    fd:close()
+    return rs
+end
+
+--[[
+
+--]]
+function btrfs_sv_delete(sv)
+    return doit("btrfs subvolume delete -c "..sv)
+end
+
+--[[
+
+--]]
+function btrfs_sv_snapshot(s,d)
+    return doit("btrfs subvolume snapshot -r "..s.." "..d)
+end
+
+--[[
+    Ex:
+    btrfs send -p cnkl77.2005052042/ cnkl77.2005152143/ | btrfs receive /backup/
+--]]
+function btrfs_send(p,s,d)
+    if not p then
+        return doit("btrfs send "..s.." | btrfs receive "..d)
+    else
+        return doit("btrfs send -p "..p.." "..s.." | btrfs receive "..d)
+    end
+end
+
+-- ########################################
+--
+
+local function tstoTime(ts)
+    local t = {}
+    t.year = ts:sub(1,4)
+    t.month = ts:sub(5,6)
+    t.day = ts:sub(7,8)
+    t.hour = ts:sub(9,10)
+    t.min = ts:sub(11,12)
+    t.sec = 0
+    return os.time(t)
+end
+
+local function findParent(ts_tbl)
+    
+    -- handle case where there is no incremental backup
+    if #ts_tbl < 2 then return ts_tbl[1] end
+
+    local i = 1
+    local min = ts_tbl[i]
+    repeat
+        min = tostring(math.min(min, ts_tbl[i+1]))
+        i = i + 1
+    until (i == #ts_tbl)
+    
+    return tostring(min)
+end
+
+-- ######################################## 
+--
+local function buildTbl(path)
+    local fd = io.popen("find "..path.." -maxdepth 1 -print")
+    local blob = fd:read("*a")
+    fd:close()
+    local t = {}
+    for s in blob:gmatch("[^\r\n]+") do
+        local name, ts = s:match(".*/(%g+)%.(%d%d%d%d%d%d%d%d%d%d%d%d)$")
+        if name then
+            if not t[name] then
+                t[name] = {}
+            end
+            table.insert(t[name], ts)
+        end
+    end
+    -- make sure the table timestamp tables are sorted
+    for name, _ in pairs(t) do table.sort(t[name]) end
+
+    return t
+end
+
+local function pruneMonthly(name, ts_list)
+
+    -- helper function that given a timestamp, returns a timestamp that is
+    -- 1 month older
+    local function prevMonth(ts)
+        local t = os.date("*t",tstoTime(ts))
+        local tm = t.month - 1
+        t.month = tm
+        t = os.date("*t", os.time(t))
+        while t.month ~= tm do
+            t.day = t.day - 1
+            t = os.date("*t", os.time(t))
+        end
+        return string.format("%u%02u%02u%02u%02u", 
+                             t.year, 
+                             t.month, 
+                             t.day, 
+                             t.hour, 
+                             t.min)
+     end
+
+    -- sort ts_list so oldest ts is at index 1 and newest ts is at index 
+    -- #ts_list
+    table.sort(ts_list)
+    -- create a reference timestamp that is 1 month older than the most
+    -- recent timestamp
+    local refts = prevMonth(ts_list[#ts_list])
+  
+    -- go through the timestamp list and grab all timestamps OLDER than the
+    -- reference timestamp
+    local older_ts = {}
+    for _,v in ipairs(ts_list) do
+        if v <= refts then table.insert(older_ts, v) end
+    end
+
+    local i = #older_ts
+    local keeps = {}
+
+    repeat
+        table.insert(keeps, older_ts[i])
+        refts = prevMonth(older_ts[i])
+        i = i - 1
+        -- this will get rid of all intermediate timestamps- that is, all timestamps
+        -- older than the 1st, but not at least a month older
+        while (i ~= 0 and older_ts[i] > refts) do
+            btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..older_ts[i])
+            i = i - 1
+        end
+    until i == 0 or #keeps == runtime.keep_monthly
+
+    -- if i is 0, we exhausted the list and we're done
+    while i ~= 0 do
+        btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..older_ts[i])
+        i = i - 1
+    end
+end
+
+-- fixup the snapshot_dir, backup_dir values and subvolume directories- convert
+-- leading '~' and '.' to the appropriate value so we have a full path
+-- specfication
+local function pathFixup(path)
+    local m = path:match("^~(.*)$") 
+    if m then
+        return os.getenv("HOME")..m
+    end
+    m = path:match("^%.(.*)$") 
+    if m then
+        return os.getenv("PWD")..m
+    end
+    -- nothing to do
+    return path
+end
+runtime.snapshot_dir = pathFixup(runtime.snapshot_dir)
+runtime.backup_dir = pathFixup(runtime.backup_dir)
+for name, path in pairs(runtime.subvolumes) do
+   runtime.subvolumes[name] = pathFixup(path)
+end
+
+-- assemble a timestamp to use as a suffix
+local t = os.date("*t")
+local timestamp = string.format("%u%02u%02u%02u%02u", 
+                                t.year, 
+                                t.month, 
+                                t.day, 
+                                t.hour, 
+                                t.min)
+
+-- start by taking new snapshots of the subvolumes specified 
+print("Taking snapshots.....Timestamp:  "..timestamp)
+for name, path in pairs(runtime.subvolumes) do
+    local dest = string.format("%s/%s.%s", 
+                               runtime.snapshot_dir, 
+                               name,
+                               timestamp)
+    btrfs_sv_snapshot(path, dest)
+end
+print("Snapshots completed.")
+
+-- Snapshots and backups have similar names- a name specified by the user and a
+-- timestamp assigned by btrbu separated by a dot:  eg "name.timestamp" or more
+-- specifically "name.YYYYMMDDhhmm"
+-- create a table from the from the snapshot directory, splitting the name up 
+-- between the name and timestamp.  We'll need that to help with pruning
+archive = buildTbl(runtime.snapshot_dir)
+backups = buildTbl(runtime.backup_dir)
+
+-- check if we're doing snapshots only
+if runtime.snaps_only then
+    -- yup, snaps only, so all done
+    print("Snapshots only specified.  Snapshot Timestamp: "..timestamp)
+    return
+end
+
+-- now backup and prune our snapshots, and do our incremental backups
+for name, _ in pairs(runtime.subvolumes) do
+
+    local function sv_delete_helper(ts)
+        btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..ts)
+        local backup_sv = runtime.backup_dir.."/"..name.."."..ts
+        -- Check if this corresponding backup exists before trying to delete 
+        -- NOTE: probably not the best way to do this, but it should be 
+        -- sufficient for our needs for now
+        if (io.open(backup_sv)) then btrfs_sv_delete(backup_sv) end
+    end
+
+    -- setup some path strings
+    local snapshot_prefix = runtime.snapshot_dir.."/"..name.."."
+    local source = snapshot_prefix..timestamp
+    local dest = runtime.backup_dir
+
+    -- get the parent for the current archive
+    local parent_ts = findParent(archive[name])
+    -- if this is the first time snapshotting a subvolume, then the parent_ts
+    -- will match the current timestamp, in which case do a full backup
+    if parent_ts == timestamp then 
+        print("First snapshot of this subvolume, doing full backup")
+        btrfs_send(nil, source, dest)
+    elseif os.difftime(tstoTime(timestamp), tstoTime(parent_ts)) >= seconds_per_week then
+        -- the current parent is at least 1 week old, so we'll do a full backup
+        -- and then remove the previous parent and it's incremental backups
+        print("Performing full backup for subvolume: "..runtime.subvolumes[name])
+        -- do a full backup of this subvolume
+        btrfs_send(nil, source, dest)
+        print("Done")
+
+        -- now remove all prior backups and incremental volumes prior to this
+        print("Removing all previous snapshots and backups")
+        for _, v in ipairs(archive[name]) do
+            if v ~= timestamp then sv_delete_helper(v) end
+        end
+    else
+        local parent = snapshot_prefix..parent_ts
+        print("Doing incremental backup for subvolume: "..runtime.subvolumes[name])
+        btrfs_send(parent, source, dest)
+        print("Done")
+       
+        -- so we've backed up the snapshot, now delete the previous snapshot and the 
+        -- incremental backup
+        print("Removing previous incremental snapshots and backup...")
+        for _, v in ipairs(archive[name]) do
+            if v ~= parent_ts and v ~= timestamp then sv_delete_helper(v) end
+        end
+    end
+    print("Backups completed.  Archive Timestamp: "..timestamp)
+end
