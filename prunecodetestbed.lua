@@ -9,9 +9,9 @@ seed_ts.min = 30
 seed_ts.sec = 15
 
 ts_list = {}
-keep_monthly = 1
-keep_weekly = 1
-keep_daily = 1 
+keep_monthly = 6
+keep_weekly = 4
+keep_daily = 7 
 
 for i = 1, 365, 1 do
     table.insert(ts_list, string.format("%u%02u%02u%02u%02u",
@@ -54,8 +54,8 @@ end
 -- Sunday is day 1...Saturday is 7
 local function prevWeek(ts, week_cnt)
     local t = os.date("*t", tstoTime(ts))
-    while t.wday ~= 7 do
-        t = os.date("*t", os.time(t) - (24*3600))
+    if t.wday ~= 7 then
+        t = os.date("*t", os.time(t) - (24*3600)*(t.wday))
     end
     t = os.date("*t", os.time(t) - (week_cnt*(7*24*3600)))
     return string.format("%u%02u%02u%02u%02u",
@@ -81,6 +81,8 @@ local function prevMonth(ts, months_cnt)
                                    )
                 )
     elseif t.day ~= chk_lastday.day then
+        -- not the last day of the month, so adjust to last day of 
+        -- previous month
         t = os.date("*t", os.time({year = t.year,
                                    month = t.month,
                                    day = 0,
@@ -123,6 +125,8 @@ local function getKeeps(tlist, keep_tbl, max_keeps, ts_start, interval)
             table.insert(timestamps, v)
         end 
     end
+
+    if #timestamps == 0 then return nil end
 
     local i = #timestamps
     local keep_cnt = 0
@@ -213,3 +217,95 @@ for i = 1,sim_days,1 do
     seed_ts = os.date("*t", os.time(seed_ts))
  
 end
+
+print("##################################################")
+print("#")
+print("#     Test 2")
+print("#")
+print("##################################################")
+
+-- *********************************************
+-- test 2, build up to a full archive
+ts_list = {}
+keep_monthly = 6
+keep_weekly = 4
+keep_daily = 7 
+
+seed_ts = {}
+seed_ts.year = 2019
+seed_ts.month = 6
+seed_ts.day = 8
+seed_ts.hour = 14
+seed_ts.min = 30
+seed_ts.sec = 15
+sim_days = 93
+for i = 1,sim_days,1 do
+
+    -- simulate adding another timestamp
+    new_ts = string.format("%u%02u%02u%02u%02u",
+                                         seed_ts.year,
+                                         seed_ts.month,
+                                         seed_ts.day,
+                                         seed_ts.hour,
+                                         seed_ts.min)
+    print("New Timestamp: "..new_ts)
+    table.insert(ts_list, new_ts)
+
+    print("DAY: "..i)
+    table.sort(ts_list)
+    for i,v in ipairs(ts_list) do print(i,v) end
+    --print("Most Recent Timestamp: "..ts_list[#ts_list])
+    keeps = {}
+    oldest_keep = nil
+
+    -- start with daily...
+    --print("DAILIES")
+    -- alwasy keep the most recent timestamp, which will be the last one
+    if keep_daily ~= 0 then
+        oldest_keep = getKeeps(ts_list, 
+                               keeps, 
+                               keep_daily, 
+                               ts_list[#ts_list], 
+                               prevDay
+                              )
+    end
+
+    --print("WEEKLIES")
+    if keep_weekly ~= 0 then
+        oldest_keep = getKeeps(ts_list, 
+                               keeps, 
+                               keep_weekly,
+                               prevWeek(prevDay(oldest_keep or ts_list[#ts_list], 1), 0), 
+                               prevWeek
+                              )
+    end
+
+    --print("MONTHLY")
+    if keep_monthly ~= 0 then
+        getKeeps(ts_list, 
+                 keeps, 
+                 keep_monthly, 
+                 prevMonth(prevDay(oldest_keep or ts_list[#ts_list], 1), 0), 
+                 prevMonth
+                )
+    end
+
+    print("Removing: ")
+    for _,v in ipairs(ts_list) do
+        if not keeps[v] then print("\t"..v) end
+    end
+    
+    ts_list = {}
+    print("Keeping: ")
+    for k,_ in pairs(keeps) do 
+        print(k) 
+        table.insert(ts_list,k)
+    end
+
+    -- setup next day ts entry
+    seed_ts.day = seed_ts.day + 1
+    seed_ts = os.date("*t", os.time(seed_ts))
+ 
+end
+
+

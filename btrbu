@@ -463,12 +463,12 @@ local function prevDay(ts, days_cnt)
 end
 
 -- returns the most recent day of the previous week, initially, this is 
--- alwasy Saturday, but we can make that configurable...
+-- always Saturday, but we can make that configurable...
 -- Sunday is day 1...Saturday is 7
 local function prevWeek(ts, week_cnt)
     local t = os.date("*t", tstoTime(ts))
-    while t.wday ~= 7 do
-        t = os.date("*t", os.time(t) - (24*3600))
+    if t.wday ~= 7 then
+        t = os.date("*t", os.time(t) - (24*3600)*(t.wday))
     end
     t = os.date("*t", os.time(t) - (week_cnt*(7*24*3600)))
     return string.format("%u%02u%02u%02u%02u",
@@ -480,11 +480,18 @@ local function prevWeek(ts, week_cnt)
 end
 
 -- return last day of month that is months_cnt back
+-- it mimics the functionality of the prevWeek function, but works on months
 local function prevMonth(ts, months_cnt)
     local t = os.date("*t",tstoTime(ts))
     local chk_lastday = os.date("*t",os.time({ year = t.year,
                                                month = t.month + 1,
                                                day = 0 }))
+    -- if months_cnt == 0 and the entry timestamp is the final day of the 
+    -- month, nothing to do.  If entry timestamp is not the final day, return
+    -- the final day of the previous month.  If months_cnt ~= 0 the return
+    -- the final day of the month for months_cnt back.  For reference, using the
+    -- lua libraries, month = month + 1 and day = 0 will return the last day of
+    -- month
     if months_cnt ~= 0 then
         t = os.date("*t", os.time({year = t.year,
                                    month = t.month-months_cnt+1,
@@ -541,7 +548,7 @@ local function getKeeps(tlist, keep_tbl, max_keeps, ts_start, interval)
 
     -- the sublist may be empty if the backup process hasn't been running long
     -- enough
-    if next(timestamps) == nil then return nil end
+    if #timestamps == 0 then return nil end
 
     local i = #timestamps
     local keep_cnt = 0
