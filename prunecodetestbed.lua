@@ -13,7 +13,7 @@ keep_monthly = 6
 keep_weekly = 4
 keep_daily = 7 
 
-for i = 1, 365, 1 do
+for i = 1, 2*365, 1 do
     table.insert(ts_list, string.format("%u%02u%02u%02u%02u",
                                          seed_ts.year,
                                          seed_ts.month,
@@ -21,7 +21,7 @@ for i = 1, 365, 1 do
                                          seed_ts.hour,
                                          seed_ts.min)
             )
-    seed_ts.day = seed_ts.day + 1
+    seed_ts.hour = seed_ts.hour + 12
     seed_ts = os.date("*t", os.time(seed_ts))
 end
 
@@ -45,8 +45,8 @@ local function prevDay(ts, days_cnt)
                          t.year,
                          t.month,
                          t.day,
-                         t.hour,
-                         t.min)
+                         23,
+                         59)
 end
 
 -- returns the most recent day of the previous week, initially, this is 
@@ -62,8 +62,8 @@ local function prevWeek(ts, week_cnt)
                          t.year,
                          t.month,
                          t.day,
-                         t.hour,
-                         t.min)
+                         23,
+                         59)
 end
 
 -- return last day of month that is months_cnt back
@@ -92,13 +92,12 @@ local function prevMonth(ts, months_cnt)
                 )
     end
 
-
     return string.format("%u%02u%02u%02u%02u",
                          t.year,
                          t.month,
                          t.day,
-                         t.hour,
-                         t.min)
+                         23,
+                         59)
 end
 
 --[[
@@ -115,20 +114,26 @@ end
              interval- a function that takes a timestamp as its first
                        parameter and a interval count for the second
 --]]
-local function getKeeps(tlist, keep_tbl, max_keeps, ts_start, interval)
+local function getKeeps(timestamps, keep_tbl, max_keeps, ts_start, interval)
    
-    local timestamps = {}
-    local oldest = interval(ts_start, max_keeps)
-    print("Max Keeps: "..max_keeps.."\nRange: "..ts_start.."<-->"..oldest)
-    for _,v in ipairs(tlist) do
-        if v <= ts_start and v >= oldest then
-            table.insert(timestamps, v)
-        end 
-    end
+--    local timestamps = {}
+--    local oldest = interval(ts_start, max_keeps)
+    print("Max Keeps: "..max_keeps.."\nStarting Timestamp: "..ts_start)
+--    print("Max Keeps: "..max_keeps.."\nRange: "..ts_start.."<-->"..oldest)
+--    for _,v in ipairs(tlist) do
+--        if v <= ts_start and v >= oldest then
+--            table.insert(timestamps, v)
+--        end 
+--    end
 
-    if #timestamps == 0 then return nil end
+--    if #timestamps == 0 then return nil end
 
     local i = #timestamps
+    while i ~= 0 and timestamps[i] > ts_start  do
+       i = i - 1
+    end
+    if i == 0 then return nil end
+
     local keep_cnt = 0
     local oldest_keep = nil
     repeat
@@ -238,7 +243,7 @@ seed_ts.day = 8
 seed_ts.hour = 14
 seed_ts.min = 30
 seed_ts.sec = 15
-sim_days = 93
+sim_days = 2*93
 for i = 1,sim_days,1 do
 
     -- simulate adding another timestamp
@@ -303,7 +308,8 @@ for i = 1,sim_days,1 do
     end
 
     -- setup next day ts entry
-    seed_ts.day = seed_ts.day + 1
+--    seed_ts.day = seed_ts.day + 1
+    seed_ts.hour = seed_ts.hour + 12
     seed_ts = os.date("*t", os.time(seed_ts))
  
 end

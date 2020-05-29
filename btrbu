@@ -44,39 +44,75 @@ Options:
 usage_length = #usage
 
 -- table of valid options 
+-- table key is the option, value is another table with "help_text" as one key
+-- and "args" representing how many arguments the option takes.  For now, only 1
+-- or 0 arguments per option is supported
 local btrbu_opts = {
-    snapshot_dir = [[
+    snapshot_dir = {
+                     help_text = [[
 Path to destination for snapshots
 ]],
-    backup_dir = [[
+                     args = 1,
+    },
+    backup_dir = {
+                     help_text = [[
 Path to location for backups.  For now, it is assumed that the destination is a
 btrfs based filesystem.
 ]],
-    config = [[
+    },
+    config = {
+                     help_text = [[
 Path to a configuration file.
 ]],
-    snaps_only = [[
+                     args = 1,
+    },
+    snaps_only = {
+                     help_text = [[
 If specified only snapshots will be taken, no backups will be used.
 ]],
-    keep_daily = [[
+                     args = 0,
+    },
+    keep_daily = {
+                     help_text = [[
 Number of daily backups to be kept. Dailies kept have 24 hours between them.
 ]],
-    keep_weekly = [[
+                     args = 1,
+    },
+    keep_weekly = {
+                     help_text = [[
 Number of weeklys backups to be kept. Weeklies kept have (7*24) hours between
 them.
 ]],
-    keep_monthly = [[
+                     args = 1,
+    },
+    keep_monthly = {
+                     help_text = [[
 Number of monthly backups to be kept.  Monthlies kept have (4*7*24) hours
 between them.
 ]],
-    help = [[
+                     args = 1,
+    },
+    help = {
+                     help_text = [[
 Display this useful information.  The help option prevents execution of any
 operations, why would you be specifiying help, otherwise?
 ]],
-    prune = [[
+                     args = 0,
+    },
+    verbose = {
+                     help_text = [[
+Option to turn on output about what is happening.  The default is no output, so
+if this is present the firehose is on.
+]],
+                     args = 1,
+    },
+    prune = {
+                     help_text = [[
 Removes snapshots and backups according to the keep_daily, keep_weekly and
 keep_monthly options.    
 ]],
+                     args = 1,
+    },
 }
 
 local runtime = {}
@@ -217,28 +253,39 @@ if #options ~= 0 then
         -- must parse out option and value....
         if not opt:find("=") then
             -- just a switch
-            if btrbu_opts[opt] then
-                runtime[opt] = 1
-            else
+            local o = opt:gsub("-","_")
+            if not btrbu_opts[o] then
                 print("Invalid Option: "..opt)
                 return
+            elseif btrbu_opts[o].args ~= 0 then
+                print("Option "..opt.." expects a value, none given.")
+                return
+            else
+                runtime[o] = 1
             end
         else
             local k,v = opt:match("^([%w%-_]+)=(.+)$") 
-            if k and btrbu_opts[k] then
-                runtime[k] = v
-            else
-                print("Invalid Option: "..opt)
+            if not k then 
+                print("Invalid Option: "..opt) 
                 return
+            end
+            k = k:gsub("-","_")
+            if not btrbu_opts[k] then
+                print("Invalid Option: "..opt)
+            elseif btrbu_opts[k].args == 0 then
+                print("No value should be assigned to option: "..k:gsub("_","-"))
+                return
+            else
+                runtime[k] = v
             end
         end
     end
 end
 
  --[[ for debug...
-print("options:")
+print("User specified options:")
 for _,v in ipairs(options) do print(v) end
-print("runtime:")
+print("Internal runtime options:")
 for k,v in pairs(runtime) do
     print(k,v)
 end
@@ -298,6 +345,9 @@ if settings then
     if not runtime.snaps_only then
         runtime.snaps_only = cf_settings.snaps_only
     end
+    if not runtime.verbose then
+        runtime.verbose = cf_settings.verbose or 0
+    end
 end
 
 -- Sanity check- command line options and config file, if it exists, have been
@@ -322,8 +372,16 @@ if ( not runtime.snapshot_dir or
        table.sort(sorted_opts)
        -- build the option text here prior to printing usage info
        for _, k in ipairs(sorted_opts) do
-           local s = "  --"..k
-           table.insert(usage, s..string.rep(" ", 18-s:len())..btrbu_opts[k])
+           local s = "  --"..k:gsub("_","-") -- map the '_' character to a
+                                             -- '-' for the user to see and use
+                                             -- when actually using the command
+                                             -- line.  Internally, all '-' are
+                                             -- mapped to '_' characters so the 
+                                             -- tables work, since a '-' is not
+                                             -- valid character for variables
+                                             -- etc.
+           table.insert(usage, 
+                        s..string.rep(" ", 18-s:len())..btrbu_opts[k].help_text)
        end
        -- get current terminal width
        local fd = io.popen("tput cols")
@@ -365,28 +423,35 @@ end
 -- ########################################
 -- btrfs command functions
 
+local function info(l,text)
+    if runtime.verbose ~= 0 and runtime.verbose >= l then
+        print(text)
+    end
+end
+
 --[[
 
 --]]
-function doit(cmd)
-    print(cmd)
+local function doit(cmd)
+    info(2,cmd)
     fd = io.popen(cmd)
     local rs = fd:read("*a")
     fd:close()
+    info(3,rs)
     return rs
 end
 
 --[[
 
 --]]
-function btrfs_sv_delete(sv)
+local function btrfs_sv_delete(sv)
     return doit("btrfs subvolume delete -c "..sv)
 end
 
 --[[
 
 --]]
-function btrfs_sv_snapshot(s,d)
+local function btrfs_sv_snapshot(s,d)
     return doit("btrfs subvolume snapshot -r "..s.." "..d)
 end
 
@@ -394,7 +459,7 @@ end
     Ex:
     btrfs send -p cnkl77.2005052042/ cnkl77.2005152143/ | btrfs receive /backup/
 --]]
-function btrfs_send(p,s,d)
+local function btrfs_send(p,s,d)
     if not p then
         return doit("btrfs send "..s.." | btrfs receive "..d)
     else
@@ -458,8 +523,8 @@ local function prevDay(ts, days_cnt)
                          t.year,
                          t.month,
                          t.day,
-                         t.hour,
-                         t.min)
+                         23,
+                         59)
 end
 
 -- returns the most recent day of the previous week, initially, this is 
@@ -475,8 +540,8 @@ local function prevWeek(ts, week_cnt)
                          t.year,
                          t.month,
                          t.day,
-                         t.hour,
-                         t.min)
+                         23,
+                         59)
 end
 
 -- return last day of month that is months_cnt back
@@ -493,23 +558,22 @@ local function prevMonth(ts, months_cnt)
     -- lua libraries, month = month + 1 and day = 0 will return the last day of
     -- month
     if months_cnt ~= 0 then
-        t = os.date("*t", os.time({year = t.year,
-                                   month = t.month-months_cnt+1,
-                                   day = 0,
-                                   hour = t.hour,
-                                   min = t.min}
+        t = os.date("*t", os.time( { year = t.year,
+                                     month = t.month-months_cnt+1,
+                                     day = 0,
+                                     hour = 23,
+                                     min = 59 }
                                    )
                 )
     elseif t.day ~= chk_lastday.day then
-        t = os.date("*t", os.time({year = t.year,
-                                   month = t.month,
-                                   day = 0,
-                                   hour = t.hour,
-                                   min = t.min}
+        t = os.date("*t", os.time( { year = t.year,
+                                     month = t.month,
+                                     day = 0,
+                                     hour = 23,
+                                     min = 59 }
                                    )
                 )
     end
-
 
     return string.format("%u%02u%02u%02u%02u",
                          t.year,
@@ -533,24 +597,25 @@ end
              interval- a function that takes a timestamp as its first
                        parameter and a interval count for the second
 --]]
-local function getKeeps(tlist, keep_tbl, max_keeps, ts_start, interval)
+local function getKeeps(timestamps, keep_tbl, max_keeps, ts_start, interval)
 
-    local timestamps = {}
-    local oldest = interval(ts_start, max_keeps)
-    -- build a sublist from tlist of only those timestamps that are within a
-    -- range determined by ts_start and the maximum number of keeps for this
-    -- interval
-    for _,v in ipairs(tlist) do
-        if v <= ts_start and v >= oldest then
-            table.insert(timestamps, v)
-        end
-    end
-
-    -- the sublist may be empty if the backup process hasn't been running long
-    -- enough
-    if #timestamps == 0 then return nil end
+--    local timestamps = {}
+--    local oldest = interval(ts_start, max_keeps)
+--    -- build a sublist from tlist of only those timestamps that are within a
+--    -- range determined by ts_start and the maximum number of keeps for this
+--    -- interval
+--    for _,v in ipairs(tlist) do
+--        if v <= ts_start and v >= oldest then
+--            table.insert(timestamps, v)
+--        end
+--    end
 
     local i = #timestamps
+    while i ~= 0 and timestamps[i] > ts_start  do
+       i = i - 1
+    end
+    if i == 0 then return nil end
+    
     local keep_cnt = 0
     local oldest_keep = nil
     repeat
@@ -574,7 +639,7 @@ local function getKeepList(ts_list)
     local oldest_keep = nil
 
     -- start with daily...
-    -- alwasy keep the most recent timestamp, which will be the last one
+    -- always keep the most recent timestamp, which will be the last one
     if runtime.keep_daily ~= 0 then
         oldest_keep = getKeeps(ts_list,
                                keeps,
@@ -634,7 +699,7 @@ local timestamp = string.format("%u%02u%02u%02u%02u",
                                 t.min)
 
 -- start by taking new snapshots of the subvolumes specified 
-print("Taking snapshots.....Timestamp:  "..timestamp)
+info(1, "Taking snapshots.....Timestamp:  "..timestamp)
 for name, path in pairs(runtime.subvolumes) do
     local dest = string.format("%s/%s.%s", 
                                runtime.snapshot_dir, 
@@ -642,7 +707,7 @@ for name, path in pairs(runtime.subvolumes) do
                                timestamp)
     btrfs_sv_snapshot(path, dest)
 end
-print("Snapshots completed.")
+info(1,"Snapshots completed.")
 
 -- Snapshots and backups have similar names- a name specified by the user and a
 -- timestamp assigned by btrbu separated by a dot:  eg "name.timestamp" or more
@@ -654,17 +719,19 @@ archive = buildTbl(runtime.snapshot_dir)
 -- check if we're doing snapshots only
 if runtime.snaps_only then
     -- yup, snaps only, so all done
-    print("Snapshots only specified.  Snapshot Timestamp: "..timestamp)
-    print("Pruning snapshots:")
-    print("Keeping:\n\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
+    info(1, "Snapshots only specified.  Snapshot Timestamp: "..timestamp)
+    info(1, "Pruning snapshots:")
+    info(1, "Keeping:\n\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
     for name, _ in pairs(runtime.subvolumes) do
         local ts_list = archive[name]
         local keeps = getKeepList(ts_list)
         for _,v in ipairs(ts_list) do
             if not keeps[v] then print("Removing snapshot: "..name.."."..v) end
         end
+        for k,_ in pairs(keeps) do print("Keeping snapshot: "..name.."."..k) end
     end
 
+    info(1,"Done")
     return
 end
 
@@ -692,33 +759,33 @@ for name, _ in pairs(runtime.subvolumes) do
     -- if this is the first time snapshotting a subvolume, then the parent_ts
     -- will match the current timestamp, in which case do a full backup
     if parent_ts == timestamp then 
-        print("First snapshot of this subvolume, doing full backup")
+        info(1, "First snapshot of this subvolume, doing full backup")
         btrfs_send(nil, source, dest)
     elseif os.difftime(tstoTime(timestamp), tstoTime(parent_ts)) >= seconds_per_week then
         -- the current parent is at least 1 week old, so we'll do a full backup
         -- and then remove the previous parent and it's incremental backups
-        print("Performing full backup for subvolume: "..runtime.subvolumes[name])
+        info(1, "Performing full backup for subvolume: "..runtime.subvolumes[name])
         -- do a full backup of this subvolume
         btrfs_send(nil, source, dest)
-        print("Done")
+        info(1, "Done")
 
         -- now remove all prior backups and incremental volumes prior to this
-        print("Removing all previous snapshots and backups")
+        info(1, "Removing all previous snapshots and backups")
         for _, v in ipairs(archive[name]) do
             if v ~= timestamp then sv_delete_helper(v) end
         end
     else
         local parent = snapshot_prefix..parent_ts
-        print("Doing incremental backup for subvolume: "..runtime.subvolumes[name])
+        info(1, "Doing incremental backup for subvolume: "..runtime.subvolumes[name])
         btrfs_send(parent, source, dest)
-        print("Done")
+        info(1, "Done")
        
         -- so we've backed up the snapshot, now delete the previous snapshot and the 
         -- incremental backup
-        print("Removing previous incremental snapshots and backup...")
+        info(1, "Removing previous incremental snapshots and backup...")
         for _, v in ipairs(archive[name]) do
             if v ~= parent_ts and v ~= timestamp then sv_delete_helper(v) end
         end
     end
-    print("Backups completed.  Archive Timestamp: "..timestamp)
+    info(1, "Backups completed.  Archive Timestamp: "..timestamp)
 end
