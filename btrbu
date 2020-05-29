@@ -72,7 +72,11 @@ between them.
     help = [[
 Display this useful information.  The help option prevents execution of any
 operations, why would you be specifiying help, otherwise?
-]]
+]],
+    prune = [[
+Removes snapshots and backups according to the keep_daily, keep_weekly and
+keep_monthly options.    
+]],
 }
 
 local runtime = {}
@@ -427,7 +431,6 @@ local function findParent(ts_tbl)
     return tostring(min)
 end
 
--- ######################################## 
 --
 local function buildTbl(path)
     local fd = io.popen("find "..path.." -maxdepth 1 -print")
@@ -449,61 +452,148 @@ local function buildTbl(path)
     return t
 end
 
-local function pruneMonthly(name, ts_list)
+local function prevDay(ts, days_cnt)
+    local t = os.date("*t", tstoTime(ts) - (days_cnt*24*3600))
+    return string.format("%u%02u%02u%02u%02u",
+                         t.year,
+                         t.month,
+                         t.day,
+                         t.hour,
+                         t.min)
+end
 
-    -- helper function that given a timestamp, returns a timestamp that is
-    -- 1 month older
-    local function prevMonth(ts)
-        local t = os.date("*t",tstoTime(ts))
-        local tm = t.month - 1
-        t.month = tm
-        t = os.date("*t", os.time(t))
-        while t.month ~= tm do
-            t.day = t.day - 1
-            t = os.date("*t", os.time(t))
-        end
-        return string.format("%u%02u%02u%02u%02u", 
-                             t.year, 
-                             t.month, 
-                             t.day, 
-                             t.hour, 
-                             t.min)
-     end
+-- returns the most recent day of the previous week, initially, this is 
+-- alwasy Saturday, but we can make that configurable...
+-- Sunday is day 1...Saturday is 7
+local function prevWeek(ts, week_cnt)
+    local t = os.date("*t", tstoTime(ts))
+    while t.wday ~= 7 do
+        t = os.date("*t", os.time(t) - (24*3600))
+    end
+    t = os.date("*t", os.time(t) - (week_cnt*(7*24*3600)))
+    return string.format("%u%02u%02u%02u%02u",
+                         t.year,
+                         t.month,
+                         t.day,
+                         t.hour,
+                         t.min)
+end
 
-    -- sort ts_list so oldest ts is at index 1 and newest ts is at index 
-    -- #ts_list
-    table.sort(ts_list)
-    -- create a reference timestamp that is 1 month older than the most
-    -- recent timestamp
-    local refts = prevMonth(ts_list[#ts_list])
-  
-    -- go through the timestamp list and grab all timestamps OLDER than the
-    -- reference timestamp
-    local older_ts = {}
-    for _,v in ipairs(ts_list) do
-        if v <= refts then table.insert(older_ts, v) end
+-- return last day of month that is months_cnt back
+local function prevMonth(ts, months_cnt)
+    local t = os.date("*t",tstoTime(ts))
+    local chk_lastday = os.date("*t",os.time({ year = t.year,
+                                               month = t.month + 1,
+                                               day = 0 }))
+    if months_cnt ~= 0 then
+        t = os.date("*t", os.time({year = t.year,
+                                   month = t.month-months_cnt+1,
+                                   day = 0,
+                                   hour = t.hour,
+                                   min = t.min}
+                                   )
+                )
+    elseif t.day ~= chk_lastday.day then
+        t = os.date("*t", os.time({year = t.year,
+                                   month = t.month,
+                                   day = 0,
+                                   hour = t.hour,
+                                   min = t.min}
+                                   )
+                )
     end
 
-    local i = #older_ts
-    local keeps = {}
 
+    return string.format("%u%02u%02u%02u%02u",
+                         t.year,
+                         t.month,
+                         t.day,
+                         t.hour,
+                         t.min)
+end
+
+--[[
+    Function to determine what timestamps to keep.  This was a mess to figure
+    out.  Only managed it because I built the algorithm for 1 case and then
+    worked backwards to generalize it to work for 3 different intervals- daily,
+    weekly and monthly
+
+    Params:  tlist- table of timestamps to work through
+             keep_tbl- destination table for timestamps to keep
+             max_keeps- maximum number of keeps
+             ts_start- seed timestamp when determining the slice
+                       of timestamps from the tlist
+             interval- a function that takes a timestamp as its first
+                       parameter and a interval count for the second
+--]]
+local function getKeeps(tlist, keep_tbl, max_keeps, ts_start, interval)
+
+    local timestamps = {}
+    local oldest = interval(ts_start, max_keeps)
+    -- build a sublist from tlist of only those timestamps that are within a
+    -- range determined by ts_start and the maximum number of keeps for this
+    -- interval
+    for _,v in ipairs(tlist) do
+        if v <= ts_start and v >= oldest then
+            table.insert(timestamps, v)
+        end
+    end
+
+    -- the sublist may be empty if the backup process hasn't been running long
+    -- enough
+    if next(timestamps) == nil then return nil end
+
+    local i = #timestamps
+    local keep_cnt = 0
+    local oldest_keep = nil
     repeat
-        table.insert(keeps, older_ts[i])
-        refts = prevMonth(older_ts[i])
+        oldest_keep = timestamps[i]
+        keep_tbl[timestamps[i]] = 1
+        keep_cnt = keep_cnt + 1
+        local tsref = interval(timestamps[i], 1)
         i = i - 1
-        -- this will get rid of all intermediate timestamps- that is, all timestamps
-        -- older than the 1st, but not at least a month older
-        while (i ~= 0 and older_ts[i] > refts) do
-            btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..older_ts[i])
+        while (i ~= 0 and
+               timestamps[i] > tsref and
+               keep_cnt ~= max_keeps) do
             i = i - 1
         end
-    until i == 0 or #keeps == runtime.keep_monthly
+    until i == 0 or keep_cnt == max_keeps
 
-    -- if i is 0, we exhausted the list and we're done
-    while i ~= 0 do
-        btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..older_ts[i])
-        i = i - 1
+    return oldest_keep
+end
+
+local function getKeepList(ts_list)
+    local keeps = {}
+    local oldest_keep = nil
+
+    -- start with daily...
+    -- alwasy keep the most recent timestamp, which will be the last one
+    if runtime.keep_daily ~= 0 then
+        oldest_keep = getKeeps(ts_list,
+                               keeps,
+                               runtime.keep_daily,
+                               ts_list[#ts_list],
+                               prevDay
+                              )
     end
+    if runtime.keep_weekly ~= 0 then
+        oldest_keep = getKeeps(ts_list,
+                               keeps,
+                               runtime.keep_weekly,
+                               prevWeek(prevDay(oldest_keep or ts_list[#ts_list], 1), 0),
+                               prevWeek
+                              )
+    end
+    if runtime.keep_monthly ~= 0 then
+        getKeeps(ts_list,
+                 keeps,
+                 runtime.keep_monthly,
+                 prevMonth(prevDay(oldest_keep or ts_list[#ts_list], 1), 0),
+                 prevMonth
+                )
+    end
+
+    return keeps
 end
 
 -- fixup the snapshot_dir, backup_dir values and subvolume directories- convert
@@ -553,14 +643,25 @@ print("Snapshots completed.")
 -- create a table from the from the snapshot directory, splitting the name up 
 -- between the name and timestamp.  We'll need that to help with pruning
 archive = buildTbl(runtime.snapshot_dir)
-backups = buildTbl(runtime.backup_dir)
 
 -- check if we're doing snapshots only
 if runtime.snaps_only then
     -- yup, snaps only, so all done
     print("Snapshots only specified.  Snapshot Timestamp: "..timestamp)
+    print("Pruning snapshots:")
+    print("Keeping:\n\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
+    for name, _ in pairs(runtime.subvolumes) do
+        local ts_list = archive[name]
+        local keeps = getKeepList(ts_list)
+        for _,v in ipairs(ts_list) do
+            if not keeps[v] then print("Removing snapshot: "..name.."."..v) end
+        end
+    end
+
     return
 end
+
+backups = buildTbl(runtime.backup_dir)
 
 -- now backup and prune our snapshots, and do our incremental backups
 for name, _ in pairs(runtime.subvolumes) do
