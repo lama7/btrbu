@@ -463,19 +463,23 @@ local function tstoTime(ts)
     return os.time(t)
 end
 
-local function findParent(ts_tbl)
+-- returns the most recent timestamp from ts_tbl that isn't current_ts
+-- returns nil if current_ts is the only entry
+local function getParent(ts_tbl, current_ts)
     
     -- handle case where there is no incremental backup
-    if #ts_tbl < 2 then return ts_tbl[1] end
+    if #ts_tbl < 2 then return nil end
 
     local i = 1
-    local min = ts_tbl[i]
+    local max = ts_tbl[i]
     repeat
-        min = tostring(math.min(min, ts_tbl[i+1]))
+        if ts_tbl[i+1] ~= current_ts then
+            max = tostring(math.max(max, ts_tbl[i+1]))
+        end
         i = i + 1
     until (i == #ts_tbl)
-    
-    return tostring(min)
+
+    return tostring(max)
 end
 
 -- Builds a table of archive names along with all the timestamps associated with those archives
@@ -708,15 +712,14 @@ if runtime.snaps_only then
     info(1, "Pruning snapshots, keeping:")
     info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
     for name, _ in pairs(runtime.subvolumes) do
-        local ts_list = archive[name]
-        local keeps = getKeepList(ts_list)
-        for _,v in ipairs(ts_list) do
+        local keeps = getKeepList(archive[name])
+        for _,v in ipairs(archive[name]) do
             if not keeps[v] then 
                 btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..v)
             end
         end
         for k,_ in pairs(keeps) do 
-            info(2,"Keeping snapshot: "..runtime.snapshot_dir.."/"..name.."."..k) 
+            info(2,"Keeping: "..runtime.snapshot_dir.."/"..name.."."..k) 
         end
     end
 
@@ -724,19 +727,11 @@ if runtime.snaps_only then
     return
 end
 
+-- doing snapshots AND backups...
 backups = buildTbl(runtime.backup_dir)
 
 -- now backup and prune our snapshots, and do our incremental backups
 for name, _ in pairs(runtime.subvolumes) do
-
-    local function sv_delete_helper(ts)
-        btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..ts)
-        local backup_sv = runtime.backup_dir.."/"..name.."."..ts
-        -- Check if this corresponding backup exists before trying to delete 
-        -- NOTE: probably not the best way to do this, but it should be 
-        -- sufficient for our needs for now
-        if (io.open(backup_sv)) then btrfs_sv_delete(backup_sv) end
-    end
 
     -- setup some path strings
     local snapshot_prefix = runtime.snapshot_dir.."/"..name.."."
@@ -744,37 +739,40 @@ for name, _ in pairs(runtime.subvolumes) do
     local dest = runtime.backup_dir
 
     -- get the parent for the current archive
-    local parent_ts = findParent(archive[name])
+    local parent_ts = getParent(archive[name], timestamp)
     -- if this is the first time snapshotting a subvolume, then the parent_ts
     -- will match the current timestamp, in which case do a full backup
-    if parent_ts == timestamp then 
+    if not parent_ts then 
         info(1, "First snapshot of this subvolume, doing full backup")
         btrfs_send(nil, source, dest)
-    elseif os.difftime(tstoTime(timestamp), tstoTime(parent_ts)) >= seconds_per_week then
-        -- the current parent is at least 1 week old, so we'll do a full backup
-        -- and then remove the previous parent and it's incremental backups
-        info(1, "Performing full backup for subvolume: "..runtime.subvolumes[name])
-        -- do a full backup of this subvolume
-        btrfs_send(nil, source, dest)
-        info(1, "Done")
-
-        -- now remove all prior backups and incremental volumes prior to this
-        info(1, "Removing all previous snapshots and backups")
-        for _, v in ipairs(archive[name]) do
-            if v ~= timestamp then sv_delete_helper(v) end
-        end
     else
-        local parent = snapshot_prefix..parent_ts
+        local parent_path = snapshot_prefix..parent_ts
         info(1, "Doing incremental backup for subvolume: "..runtime.subvolumes[name])
-        btrfs_send(parent, source, dest)
+        btrfs_send(parent_path, source, dest)
         info(1, "Done")
-       
-        -- so we've backed up the snapshot, now delete the previous snapshot and the 
-        -- incremental backup
-        info(1, "Removing previous incremental snapshots and backup...")
-        for _, v in ipairs(archive[name]) do
-            if v ~= parent_ts and v ~= timestamp then sv_delete_helper(v) end
+        info(1, "Pruning snapshots and backups, keeping:")
+        info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
+   
+        -- apply prune policy and move on to next archive
+        local keeps = getKeepList(archive[name])
+        for _,v in ipairs(archive[name]) do
+            if not keeps[v] then
+                btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..v)
+                local backup_sv = runtime.backup_dir.."/"..name.."."..v
+                -- Check if this corresponding backup exists before trying to delete 
+                -- NOTE: probably not the best way to do this, but it should be 
+                -- sufficient for our needs for now
+                if (io.open(backup_sv)) then btrfs_sv_delete(backup_sv) end
+            end
         end
+        for k,_ in pairs(keeps) do
+            local path_suffix = "/"..name.."."..v
+            info(2,"Keeping: \n\t"..runtime.snapshot_dir..path_suffix.."\n\t"..runtime.backup_dir..path_suffix)
+        end
+        info(1,"Done")
     end
-    info(1, "Backups completed.  Archive Timestamp: "..timestamp)
+
 end
+
+info(1, "Backups completed.  Archive Timestamp: "..timestamp)
+
