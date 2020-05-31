@@ -463,25 +463,6 @@ local function tstoTime(ts)
     return os.time(t)
 end
 
--- returns the most recent timestamp from ts_tbl that isn't current_ts
--- returns nil if current_ts is the only entry
-local function getParent(ts_tbl, current_ts)
-    
-    -- handle case where there is no incremental backup
-    if #ts_tbl < 2 then return nil end
-
-    local i = 1
-    local max = ts_tbl[i]
-    repeat
-        if ts_tbl[i+1] ~= current_ts then
-            max = tostring(math.max(max, ts_tbl[i+1]))
-        end
-        i = i + 1
-    until (i == #ts_tbl)
-
-    return tostring(max)
-end
-
 -- Builds a table of archive names along with all the timestamps associated with those archives
 -- Typically, this will be either a snapshot directory or a backup directory
 local function buildTbl(path)
@@ -502,6 +483,27 @@ local function buildTbl(path)
     for name, _ in pairs(t) do table.sort(t[name]) end
 
     return t
+end
+
+--[[
+    Returns the most recent timestamp that is common to both the snapkeeps and 
+    backups keeps.  Note that backupkeeps will NOT have the current timestamp in it since we haven't
+    tried to do a backup yet.  Btrfs needs a common archive to work with when generating incremental
+    backups.
+--]]
+local function getParent(snapkeept, backupkeept, current_ts)
+    
+    local max = nil
+    for k, _ in pairs(snapkeept) do
+        -- if this snapshot timestamp is in the backup keep list, it's a candidate, otherwise move on
+        if backupkeept[k] then
+            if not max and k ~= current_ts then max = k
+            elseif k < current_ts then max = tostring(math.max(max, k))
+            end
+        end
+    end
+
+    return max
 end
 
 --[[
@@ -703,7 +705,7 @@ info(1,"Snapshots completed")
 -- specifically "name.YYYYMMDDhhmm"
 -- create a table from the from the snapshot directory, splitting the name up 
 -- between the name and timestamp.  We'll need that to help with pruning
-archive = buildTbl(runtime.snapshot_dir)
+snaps = buildTbl(runtime.snapshot_dir)
 
 -- check if we're doing snapshots only
 if runtime.snaps_only then
@@ -712,8 +714,8 @@ if runtime.snaps_only then
     info(1, "Pruning snapshots, keeping:")
     info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
     for name, _ in pairs(runtime.subvolumes) do
-        local keeps = getKeepList(archive[name])
-        for _,v in ipairs(archive[name]) do
+        local keeps = getKeepList(snaps[name])
+        for _,v in ipairs(snaps[name]) do
             if not keeps[v] then 
                 btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..v)
             end
@@ -739,39 +741,55 @@ for name, _ in pairs(runtime.subvolumes) do
     local dest = runtime.backup_dir
 
     -- get the parent for the current archive
-    local parent_ts = getParent(archive[name], timestamp)
-    -- if this is the first time snapshotting a subvolume, then the parent_ts
-    -- will match the current timestamp, in which case do a full backup
+    local snapkeeps = getKeepList(snaps[name])
+    local backupkeeps = getKeepList(backups[name])
+    local parent_ts = getParent(snapkeeps, backupkeeps, timestamp)
+    -- in no valid parent, then perform a full backup, otherwise perform an incremental backup
+    -- getParent chooses the most recent timestamp for the incremental backup
     if not parent_ts then 
-        info(1, "First snapshot of this subvolume, doing full backup")
+        info(1, "No valid parent found, doing full backup")
         btrfs_send(nil, source, dest)
     else
         local parent_path = snapshot_prefix..parent_ts
         info(1, "Doing incremental backup for subvolume: "..runtime.subvolumes[name])
+        info(2, "Parent Timestamp: "..parent_ts)
         btrfs_send(parent_path, source, dest)
         info(1, "Done")
-        info(1, "Pruning snapshots and backups, keeping:")
-        info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
-   
-        -- apply prune policy and move on to next archive
-        local keeps = getKeepList(archive[name])
-        for _,v in ipairs(archive[name]) do
-            if not keeps[v] then
-                btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..v)
-                local backup_sv = runtime.backup_dir.."/"..name.."."..v
-                -- Check if this corresponding backup exists before trying to delete 
-                -- NOTE: probably not the best way to do this, but it should be 
-                -- sufficient for our needs for now
-                if (io.open(backup_sv)) then btrfs_sv_delete(backup_sv) end
-            end
-        end
-        for k,_ in pairs(keeps) do
-            local path_suffix = "/"..name.."."..v
-            info(2,"Keeping: \n\t"..runtime.snapshot_dir..path_suffix.."\n\t"..runtime.backup_dir..path_suffix)
-        end
-        info(1,"Done")
     end
 
+    -- update the backup keep list now that we've added a backup
+    backups = buildTbl(runtime.backup_dir)
+    backupkeeps = getKeepList(backups[name])
+    -- now prune the snapshot and backup directories
+    info(1, "Pruning snapshots and backups, keep policy:")
+    info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
+    -- apply keep policy to snapshots
+    for _,v in ipairs(snaps[name]) do
+        if not snapkeeps[v] then
+            btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..v)
+        end
+    end
+    -- apply keep policy to backups
+    for _,v in ipairs(backups[name]) do
+        if not backupkeeps[v] then
+            btrfs_sv_delete(runtime.backup_dir.."/"..name.."."..v)
+        end
+    end
+
+    -- show what we're keeping
+    -- only do this if verbose is sufficiently high, otherwise just wasting time
+    if runtime.verbose > 1 then
+        local function displayKeeps(whichkeep,keeplist,path,suffix)
+            info(2, whichkeep)
+            for k,_ in pairs(keeplist) do
+                info(2,"\t"..path.."/"..suffix.."."..k)
+            end
+        end
+        displayKeeps("Keeping snapshots:", snapkeeps, runtime.snapshot_dir, name)
+        displayKeeps("Keeping backups:", backupkeeps, runtime.backup_dir, name)
+    end
+
+    info(1,"Done")
 end
 
 info(1, "Backups completed.  Archive Timestamp: "..timestamp)
