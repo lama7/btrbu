@@ -742,8 +742,12 @@ for name, _ in pairs(runtime.subvolumes) do
 
     -- get the parent for the current archive
     local snapkeeps = getKeepList(snaps[name])
-    local backupkeeps = getKeepList(backups[name])
-    local parent_ts = getParent(snapkeeps, backupkeeps, timestamp)
+    local backupkeeps = nil
+    local parent_ts = nil
+    if backups[name] then 
+        backupkeeps = getKeepList(backups[name]) 
+        parent_ts = getParent(snapkeeps, backupkeeps, timestamp)
+    end
     -- in no valid parent, then perform a full backup, otherwise perform an incremental backup
     -- getParent chooses the most recent timestamp for the incremental backup
     if not parent_ts then 
