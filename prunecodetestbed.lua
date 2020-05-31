@@ -116,18 +116,7 @@ end
 --]]
 local function getKeeps(timestamps, keep_tbl, max_keeps, ts_start, interval)
    
---    local timestamps = {}
---    local oldest = interval(ts_start, max_keeps)
     print("Max Keeps: "..max_keeps.."\nStarting Timestamp: "..ts_start)
---    print("Max Keeps: "..max_keeps.."\nRange: "..ts_start.."<-->"..oldest)
---    for _,v in ipairs(tlist) do
---        if v <= ts_start and v >= oldest then
---            table.insert(timestamps, v)
---        end 
---    end
-
---    if #timestamps == 0 then return nil end
-
     local i = #timestamps
     while i ~= 0 and timestamps[i] > ts_start  do
        i = i - 1
@@ -138,17 +127,16 @@ local function getKeeps(timestamps, keep_tbl, max_keeps, ts_start, interval)
     local oldest_keep = nil
     repeat
         print("Keeping: "..timestamps[i])
-        oldest_keep = timestamps[i]
         keep_tbl[timestamps[i]] = 1
+        oldest_keep = timestamps[i]
         keep_cnt = keep_cnt + 1
+        if keep_cnt == max_keeps then return oldest_keep end
         local tsref = interval(timestamps[i], 1)
         i = i - 1
-        while (i ~= 0 and 
-               timestamps[i] > tsref and
-               keep_cnt ~= max_keeps) do
+        while ( i ~= 0 and timestamps[i] > tsref ) do
             i = i - 1
         end
-    until i == 0 or keep_cnt == max_keeps
+    until i == 0 
 
     return oldest_keep
 end

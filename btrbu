@@ -15,27 +15,13 @@ usage = {
 Usage:  btrbu [OPTIONS] [archive1=/path/to/subvolume1] [archive2=/path/to/subvolume2] ...
 ]],
 [[
-btrbu is a program to create and manage snapshots and backups for btrfs
-subvolumes.  Minimally, it requires a snapshot destination path, a backup
-destination path, and a list of source volumes to take snapshots of and backup.
-These can all be supplied on the command line or in a config file.  Names for 
-the snapshots and backups must be supplied- btrbu will append a
-timestamp to the name to create the snapshot/backup. 
+btrbu is a program to create and manage snapshots and backups for btrfs subvolumes.  Minimally, it requires a snapshot destination path, a backup destination path, and a list of source volumes to take snapshots of and backup. These can all be supplied on the command line or in a config file.  Names for the snapshots and backups must be supplied- btrbu will append a timestamp to the name to create the snapshot/backup. 
 ]],
 [[
-If no archive/subvolume pairs are specified on the command line, btrbu will look
-for them in a config file.  The default config file is "~/.config/btrbu-conf" 
-but the user can specify a particular file with the "--config" option.  If there
-are no archive/subvolume pairs specified in a config file, then there is nothing
-to do and the user gets this message.  Command line archive/subvolume pairs take
-precedence and prevent operations on archive/subvolume pairs specified in a
-config file.  NO ATTEMPT IS MADE TO RECONCILE BETWEEN THE COMMAND LINE AND
-CONFIG FILE FOR ARCHIVE/SUBVOLUME PAIRS, BEHAVIOR IS EITHER/OR.
+If no archive/subvolume pairs are specified on the command line, btrbu will look for them in a config file.  The default config file is "~/.config/btrbu-conf" but the user can specify a particular file with the "--config" option.  If there are no archive/subvolume pairs specified in a config file, then there is nothing to do and the user gets this message.  Command line archive/subvolume pairs take precedence and prevent operations on archive/subvolume pairs specified in a config file.  NO ATTEMPT IS MADE TO RECONCILE BETWEEN THE COMMAND LINE AND CONFIG FILE FOR ARCHIVE/SUBVOLUME PAIRS, BEHAVIOR IS EITHER/OR.
 ]],
 [[
-All command line options can also be specified in a config file.  In the case
-where an option is defined both on the command line and in the config file,
-btrbu defaults to using the command line.
+All command line options can also be specified in a config file.  In the case where an option is defined both on the command line and in the config file, btrbu defaults to using the command line.
 ]],
 [[
 Options:
@@ -44,9 +30,11 @@ Options:
 usage_length = #usage
 
 -- table of valid options 
--- table key is the option, value is another table with "help_text" as one key
--- and "args" representing how many arguments the option takes.  For now, only 1
--- or 0 arguments per option is supported
+-- * table key is the option 
+-- * value is another table with 
+--   * "help_text" as one key and 
+--   * "args" representing how many arguments the option takes.  
+-- For now, only 1 or 0 arguments per option is supported
 local btrbu_opts = {
     snapshot_dir = {
                      help_text = [[
@@ -56,8 +44,7 @@ Path to destination for snapshots
     },
     backup_dir = {
                      help_text = [[
-Path to location for backups.  For now, it is assumed that the destination is a
-btrfs based filesystem.
+Path to location for backups.  For now, it is assumed that the destination is a btrfs based filesystem.
 ]],
     },
     config = {
@@ -80,36 +67,31 @@ Number of daily backups to be kept. Dailies kept have 24 hours between them.
     },
     keep_weekly = {
                      help_text = [[
-Number of weeklys backups to be kept. Weeklies kept have (7*24) hours between
-them.
+Number of weeklys backups to be kept. Weeklies kept have (7*24) hours between them.
 ]],
                      args = 1,
     },
     keep_monthly = {
                      help_text = [[
-Number of monthly backups to be kept.  Monthlies kept have (4*7*24) hours
-between them.
+Number of monthly backups to be kept.  Monthlies kept have (4*7*24) hours between them.
 ]],
                      args = 1,
     },
     help = {
                      help_text = [[
-Display this useful information.  The help option prevents execution of any
-operations, why would you be specifiying help, otherwise?
+Display this useful information.  The help option prevents execution of any operations, why would you be specifiying help, otherwise?
 ]],
                      args = 0,
     },
     verbose = {
                      help_text = [[
-Option to turn on output about what is happening.  The default is no output, so
-if this is present the firehose is on.
+Option to turn on output about what is happening.  The default is no output, so if this is present the firehose is on.
 ]],
                      args = 1,
     },
     prune = {
                      help_text = [[
-Removes snapshots and backups according to the keep_daily, keep_weekly and
-keep_monthly options.    
+Removes snapshots and backups according to the keep_daily, keep_weekly and keep_monthly options.    
 ]],
                      args = 1,
     },
@@ -121,11 +103,9 @@ local options = {}
 
 -- do some rudimentary command line parsing
 --[[
-    Options are denoted by a '--' prefix and are of the form "--option" or
-    "--option=value"
+    Options are denoted by a '--' prefix and are of the form "--option" or "--option=value"
     Archive/subvolume pairs are of the form "archive=subvolume"
-    We try to remove remove white space if it is used when the command is
-    invoked
+    We try to remove remove white space if it is used when the command is invoked
     Also, order must be options followed by archive/subvolume pairs
 --]]
 local i = 1
@@ -346,7 +326,9 @@ if settings then
         runtime.snaps_only = cf_settings.snaps_only
     end
     if not runtime.verbose then
-        runtime.verbose = cf_settings.verbose or 0
+        runtime.verbose = tonumber(cf_settings.verbose) or 0
+    else
+        runtime.verbose = tonumber(runtime.verbose)
     end
 end
 
@@ -423,7 +405,7 @@ end
 -- ########################################
 -- btrfs command functions
 
-local function info(l,text)
+local function info(l, text)
     if runtime.verbose ~= 0 and runtime.verbose >= l then
         print(text)
     end
@@ -496,7 +478,8 @@ local function findParent(ts_tbl)
     return tostring(min)
 end
 
---
+-- Builds a table of archive names along with all the timestamps associated with those archives
+-- Typically, this will be either a snapshot directory or a backup directory
 local function buildTbl(path)
     local fd = io.popen("find "..path.." -maxdepth 1 -print")
     local blob = fd:read("*a")
@@ -517,72 +500,6 @@ local function buildTbl(path)
     return t
 end
 
-local function prevDay(ts, days_cnt)
-    local t = os.date("*t", tstoTime(ts) - (days_cnt*24*3600))
-    return string.format("%u%02u%02u%02u%02u",
-                         t.year,
-                         t.month,
-                         t.day,
-                         23,
-                         59)
-end
-
--- returns the most recent day of the previous week, initially, this is 
--- always Saturday, but we can make that configurable...
--- Sunday is day 1...Saturday is 7
-local function prevWeek(ts, week_cnt)
-    local t = os.date("*t", tstoTime(ts))
-    if t.wday ~= 7 then
-        t = os.date("*t", os.time(t) - (24*3600)*(t.wday))
-    end
-    t = os.date("*t", os.time(t) - (week_cnt*(7*24*3600)))
-    return string.format("%u%02u%02u%02u%02u",
-                         t.year,
-                         t.month,
-                         t.day,
-                         23,
-                         59)
-end
-
--- return last day of month that is months_cnt back
--- it mimics the functionality of the prevWeek function, but works on months
-local function prevMonth(ts, months_cnt)
-    local t = os.date("*t",tstoTime(ts))
-    local chk_lastday = os.date("*t",os.time({ year = t.year,
-                                               month = t.month + 1,
-                                               day = 0 }))
-    -- if months_cnt == 0 and the entry timestamp is the final day of the 
-    -- month, nothing to do.  If entry timestamp is not the final day, return
-    -- the final day of the previous month.  If months_cnt ~= 0 the return
-    -- the final day of the month for months_cnt back.  For reference, using the
-    -- lua libraries, month = month + 1 and day = 0 will return the last day of
-    -- month
-    if months_cnt ~= 0 then
-        t = os.date("*t", os.time( { year = t.year,
-                                     month = t.month-months_cnt+1,
-                                     day = 0,
-                                     hour = 23,
-                                     min = 59 }
-                                   )
-                )
-    elseif t.day ~= chk_lastday.day then
-        t = os.date("*t", os.time( { year = t.year,
-                                     month = t.month,
-                                     day = 0,
-                                     hour = 23,
-                                     min = 59 }
-                                   )
-                )
-    end
-
-    return string.format("%u%02u%02u%02u%02u",
-                         t.year,
-                         t.month,
-                         t.day,
-                         t.hour,
-                         t.min)
-end
-
 --[[
     Function to determine what timestamps to keep.  This was a mess to figure
     out.  Only managed it because I built the algorithm for 1 case and then
@@ -598,43 +515,111 @@ end
                        parameter and a interval count for the second
 --]]
 local function getKeeps(timestamps, keep_tbl, max_keeps, ts_start, interval)
-
---    local timestamps = {}
---    local oldest = interval(ts_start, max_keeps)
---    -- build a sublist from tlist of only those timestamps that are within a
---    -- range determined by ts_start and the maximum number of keeps for this
---    -- interval
---    for _,v in ipairs(tlist) do
---        if v <= ts_start and v >= oldest then
---            table.insert(timestamps, v)
---        end
---    end
-
+    -- scan backwards until through the list to find the starting timestamp
     local i = #timestamps
     while i ~= 0 and timestamps[i] > ts_start  do
        i = i - 1
     end
     if i == 0 then return nil end
     
+    -- now start pulling timestamps
     local keep_cnt = 0
     local oldest_keep = nil
     repeat
-        oldest_keep = timestamps[i]
+        -- at this point, i is index to the most recent timestamp for the
+        -- current interval so record it
         keep_tbl[timestamps[i]] = 1
+        -- setup return value
+        oldest_keep = timestamps[i]
         keep_cnt = keep_cnt + 1
+        if keep_cnt == max_keeps then return oldest_keep end
+        -- get next most recent timestamp for the current interval (days,weeks,
+        -- months)
         local tsref = interval(timestamps[i], 1)
         i = i - 1
-        while (i ~= 0 and
-               timestamps[i] > tsref and
-               keep_cnt ~= max_keeps) do
+        -- this loop skips timestamps between the recorded one (in oldest_keep) 
+        -- and the next next valid timestamp returned by the interval function
+        while ( i ~= 0 and timestamps[i] > tsref ) do
             i = i - 1
         end
-    until i == 0 or keep_cnt == max_keeps
+    until i == 0
 
     return oldest_keep
 end
 
 local function getKeepList(ts_list)
+    -- these are some support functions that only getKeepList uses...
+    --################################################################################
+    -- returns a formatted timestamp for days_cnt days ago.
+    -- The timestamp is set to the final minute of that day
+    local function prevDay(ts, days_cnt)
+        local t = os.date("*t", tstoTime(ts) - (days_cnt*24*3600))
+        return string.format("%u%02u%02u%02u%02u",
+                             t.year,
+                             t.month,
+                             t.day,
+                             23,
+                             59)
+    end
+
+    -- returns the most recent day of the previous week, initially, this is 
+    -- always Saturday, but we can make that configurable...
+    -- Sunday is day 1...Saturday is 7
+    local function prevWeek(ts, week_cnt)
+        local t = os.date("*t", tstoTime(ts))
+        if t.wday ~= 7 then
+            t = os.date("*t", os.time(t) - (24*3600)*(t.wday))
+        end
+        t = os.date("*t", os.time(t) - (week_cnt*(7*24*3600)))
+        return string.format("%u%02u%02u%02u%02u",
+                             t.year,
+                             t.month,
+                             t.day,
+                             23,
+                             59)
+    end
+
+    -- return last day of month that is months_cnt back
+    -- it mimics the functionality of the prevWeek function, but works on months
+    local function prevMonth(ts, months_cnt)
+        local t = os.date("*t",tstoTime(ts))
+        local chk_lastday = os.date("*t",os.time({ year = t.year,
+                                                   month = t.month + 1,
+                                                   day = 0 }))
+        -- if months_cnt == 0 and the entry timestamp is the final day of the 
+        -- month, nothing to do.  If entry timestamp is not the final day, return
+        -- the final day of the previous month.  If months_cnt ~= 0 the return
+        -- the final day of the month for months_cnt back.  For reference, using the
+        -- lua libraries, month = month + 1 and day = 0 will return the last day of
+        -- month
+        if months_cnt ~= 0 then
+            t = os.date("*t", os.time( { year = t.year,
+                                         month = t.month-months_cnt+1,
+                                         day = 0,
+                                         hour = 23,
+                                         min = 59 }
+                                       )
+                    )
+        elseif t.day ~= chk_lastday.day then
+            t = os.date("*t", os.time( { year = t.year,
+                                         month = t.month,
+                                         day = 0,
+                                         hour = 23,
+                                         min = 59 }
+                                       )
+                    )
+        end
+
+        return string.format("%u%02u%02u%02u%02u",
+                             t.year,
+                             t.month,
+                             t.day,
+                             t.hour,
+                             t.min)
+    end
+
+    --################################################################################
+    -- start of getKeepList code...
     local keeps = {}
     local oldest_keep = nil
 
@@ -707,7 +692,7 @@ for name, path in pairs(runtime.subvolumes) do
                                timestamp)
     btrfs_sv_snapshot(path, dest)
 end
-info(1,"Snapshots completed.")
+info(1,"Snapshots completed")
 
 -- Snapshots and backups have similar names- a name specified by the user and a
 -- timestamp assigned by btrbu separated by a dot:  eg "name.timestamp" or more
@@ -719,16 +704,20 @@ archive = buildTbl(runtime.snapshot_dir)
 -- check if we're doing snapshots only
 if runtime.snaps_only then
     -- yup, snaps only, so all done
-    info(1, "Snapshots only specified.  Snapshot Timestamp: "..timestamp)
-    info(1, "Pruning snapshots:")
-    info(1, "Keeping:\n\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
+    info(1, "Snapshots only specified")
+    info(1, "Pruning snapshots, keeping:")
+    info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
     for name, _ in pairs(runtime.subvolumes) do
         local ts_list = archive[name]
         local keeps = getKeepList(ts_list)
         for _,v in ipairs(ts_list) do
-            if not keeps[v] then print("Removing snapshot: "..name.."."..v) end
+            if not keeps[v] then 
+                btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..v)
+            end
         end
-        for k,_ in pairs(keeps) do print("Keeping snapshot: "..name.."."..k) end
+        for k,_ in pairs(keeps) do 
+            info(2,"Keeping snapshot: "..runtime.snapshot_dir.."/"..name.."."..k) 
+        end
     end
 
     info(1,"Done")
