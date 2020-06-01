@@ -29,7 +29,7 @@ These archives will share the same snapshot and backup destination, but obviousl
 Configuration Files
 -------------------
 
-At some point, if backing up several different subvolumes for instance, a configuration file might become desirable to make the command line more manageable.  btrbu will look for a configufation file in `~/.config/btrbu-conf` if no file is specified on the command line.  Alternatively:
+At some point, if backing up several different subvolumes for instance, a configuration file might become desirable to make the command line more manageable.  btrbu will look for a configuration file in `~/.config/btrbu-conf` if no file is specified on the command line.  Alternatively:
 
     btrbu --config=/path/to/myconfig
 

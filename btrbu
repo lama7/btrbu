@@ -9,7 +9,7 @@ local table = table -- for faster access
 -- local requires
 local MAX_INFO = 3
 
-usage = {
+local usage = {
 [[
 Usage:  btrbu [OPTIONS] [archive1=/path/to/subvolume1] [archive2=/path/to/subvolume2] ...
 ]],
@@ -26,7 +26,7 @@ All command line options can also be specified in a config file.  In the case wh
 Options:
 ]],
 }
-usage_length = #usage
+local usage_length = #usage
 
 -- table of valid options 
 -- * table key is the option 
@@ -48,7 +48,7 @@ Path to location for backups.  For now, it is assumed that the destination is a 
     },
     config = {
                      help_text = [[
-Path to a configuration file.
+Path to a configuration file.  The configuration file contains a lua table with the desired option settings and archive/subvolume pairs.  See below for details and an example.
 ]],
                      args = 1,
     },
@@ -96,10 +96,47 @@ Removes snapshots and backups according to the keep_daily, keep_weekly and keep_
     },
     dryrun = {
                      help_text = [[
-No actual operations are performed.  Verbosity is set to max so the user can see what actions would be peformed.  Because of how btrbu is implemented, the dryrun assumes all btrfs level actions will complete without error.
+No actual operations are performed.  Verbosity is set to max so the user can see what actions would be performed.  Because of how btrbu is implemented, the dryrun assumes all btrfs level actions will complete without error.
 ]],
                      args = 0,
     },
+}
+
+local btrbu_optcnt = 0
+for k,_ in pairs(btrbu_opts) do btrbu_optcnt = btrbu_optcnt + 1 end
+
+local configfilehelp = {
+    [[
+CONFIGURATION FILES
+    ]],
+    [[
+At some point, if backing up several different subvolumes for instance, a configuration file might become desirable to make the command line more manageable.  btrbu will look for a configuration file in `~/.config/btrbu-conf` if no file is specified on the command line.  Alternatively:
+    ]],
+    [[
+    btrbu --config=/path/to/myconfig
+    ]],
+    [[
+Configuration files take advantage of lua's table syntax.  Don't worry, it's extremely easy to use.  A configuration file looks simply like so:
+    ]],
+    [[
+    return { 
+        subvolumes =  {
+            archive1="/path/to/subvolume1",
+            archive2="/path/to/subvolume2",
+            archive3="/path/to/subvolume3",
+        },
+        -- the leading double-dash means a comment to lua, so that can be taken
+        -- advantage of as well
+        snapshot_dir = "/pool/snapshots",
+        backup_dir = "/backup",
+    }
+    ]],
+    [[
+If an option can be specified on the command line, it can also be specified in the configuration file.  Be sure to susbstitute a `'_'` for any `'-'` characters in the command line option.  So the `--snapshot-dir` option would be specified as `snapshot_dir` in a configuration file.
+    ]],
+    [[
+Configuration files and command line options can be mixed and matched as well.  The rule is that the command line overrides any configuration file settings.  For archive name/ subvolume pairs, anything specified on the command line overrides ALL of the subvolumes in the configuration file.  So if there are 5 subvolumes specified in the configuration file, but a single achive/subvolume is specified on the command line, only the command line archive/subvolume is dealt with.  Basically, btrbu assumes the user knows what they are doing and tries not to get in the way.
+    ]]
 }
 
 local runtime = {}
@@ -372,6 +409,7 @@ if ( not runtime.snapshot_dir or not runtime.backup_dir or next(runtime.subvolum
                                              -- etc.
            table.insert(usage, s..string.rep(" ", 18-s:len())..btrbu_opts[k].help_text)
        end
+       for _,v in ipairs(configfilehelp) do table.insert(usage, v) end
        -- get current terminal width
        local fd = io.popen("tput cols")
        local cols = fd:read("*a")
@@ -379,31 +417,43 @@ if ( not runtime.snapshot_dir or not runtime.backup_dir or next(runtime.subvolum
        cols = tonumber(cols) - 1
        -- now go through the individual entries and fix them to the terminal width
        for i,v in ipairs(usage) do 
-           -- remove all linefeeds
-           local fixed_text = usage[i]:gsub("[\r\n]", " ")
-           -- now format to the terminal width
-           local length = fixed_text:len()
-           if length > cols then
-               -- insert linefeeds as needed
-               local j = 1
-               local s = ""
-               repeat
-                   local adjusted = cols
-                   if i > usage_length and s ~= "" then adjusted = adjusted - 18 end
-                   while fixed_text:sub(j+adjusted, j+adjusted) ~= " " do
-                       adjusted = adjusted - 1
-                   end
-                   if j+adjusted+1 >= length then
-                       s = s..fixed_text:sub(j, j+adjusted)
-                   else
-                       s = s..fixed_text:sub(j, j+adjusted).."\n"
-                   end
-                   if i > usage_length then s = s..string.rep(" ",18) end
-                   j = j+adjusted+1
-               until j >= length
-               fixed_text = s
+           local fixed_text = ""
+           -- check for the 1 text block we don't want to reformat
+           if not usage[i]:match("%sreturn %{") then 
+               -- remove all linefeeds
+               fixed_text = usage[i]:gsub("[\r\n]", " ")
+               -- now format to the terminal width
+               local length = fixed_text:len()
+               if length > cols then
+                   -- insert linefeeds as needed
+                   local j = 1
+                   local s = ""
+                   repeat
+                       local adjusted = cols
+                       if (i > usage_length and i < (usage_length + btrbu_optcnt)) and s ~= "" then 
+                           adjusted = adjusted - 18 
+                       end
+                       while fixed_text:sub(j+adjusted, j+adjusted) ~= " " do
+                           adjusted = adjusted - 1
+                       end
+                       if j+adjusted+1 >= length then
+                           s = s..fixed_text:sub(j, j+adjusted)
+                       else
+                           s = s..fixed_text:sub(j, j+adjusted).."\n"
+                       end
+                       if i > usage_length and i <= (usage_length + btrbu_optcnt) then 
+                           s = s..string.rep(" ",18) 
+                       end
+                       j = j+adjusted+1
+                   until j >= length
+                   fixed_text = s
+               end
+               if i < usage_length or i >= (usage_length + btrbu_optcnt) then 
+                   fixed_text = fixed_text.."\n" 
+               end
+           else -- if not usage(...
+               fixed_text = usage[i]
            end
-           if i < usage_length then fixed_text = fixed_text.."\n" end
            print(fixed_text)
        end
    return -- exit program
