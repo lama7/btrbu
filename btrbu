@@ -690,6 +690,7 @@ local timestamp = string.format("%u%02u%02u%02u%02u",
                                 t.min)
 
 -- start by taking new snapshots of the subvolumes specified 
+info(1, "########################################")
 info(1, "Taking snapshots.....Timestamp:  "..timestamp)
 for name, path in pairs(runtime.subvolumes) do
     local dest = string.format("%s/%s.%s", 
@@ -699,6 +700,7 @@ for name, path in pairs(runtime.subvolumes) do
     btrfs_sv_snapshot(path, dest)
 end
 info(1,"Snapshots completed")
+info(1, "########################################")
 
 -- Snapshots and backups have similar names- a name specified by the user and a
 -- timestamp assigned by btrbu separated by a dot:  eg "name.timestamp" or more
@@ -711,7 +713,8 @@ snaps = buildTbl(runtime.snapshot_dir)
 if runtime.snaps_only then
     -- yup, snaps only, so all done
     info(1, "Snapshots only specified")
-    info(1, "Pruning snapshots, keeping:")
+    info(1, "----------------------------------------")
+    info(1, "Keep Policy:")
     info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
     for name, _ in pairs(runtime.subvolumes) do
         local keeps = getKeepList(snaps[name])
@@ -748,6 +751,7 @@ for name, _ in pairs(runtime.subvolumes) do
         backupkeeps = getKeepList(backups[name]) 
         parent_ts = getParent(snapkeeps, backupkeeps, timestamp)
     end
+    info(1, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     -- in no valid parent, then perform a full backup, otherwise perform an incremental backup
     -- getParent chooses the most recent timestamp for the incremental backup
     if not parent_ts then 
@@ -764,37 +768,37 @@ for name, _ in pairs(runtime.subvolumes) do
     -- update the backup keep list now that we've added a backup
     backups = buildTbl(runtime.backup_dir)
     backupkeeps = getKeepList(backups[name])
+
     -- now prune the snapshot and backup directories
-    info(1, "Pruning snapshots and backups, keep policy:")
+    info(1, "----------------------------------------")
+    info(1, "Keep policy:")
     info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
     -- apply keep policy to snapshots
-    for _,v in ipairs(snaps[name]) do
-        if not snapkeeps[v] then
-            btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..v)
+    local function keepHelper(list, keeps, path)
+        for _,v in ipairs(list[name]) do
+            if not keeps[v] then
+                btrfs_sv_delete(path.."/"..name.."."..v)
+            end
         end
     end
-    -- apply keep policy to backups
-    for _,v in ipairs(backups[name]) do
-        if not backupkeeps[v] then
-            btrfs_sv_delete(runtime.backup_dir.."/"..name.."."..v)
-        end
-    end
+    keepHelper(snaps, snapkeeps, runtime.snapshot_dir)
+    keepHelper(backups, backupkeeps, runtime.backup_dir)
 
     -- show what we're keeping
     -- only do this if verbose is sufficiently high, otherwise just wasting time
     if runtime.verbose > 1 then
         local function displayKeeps(whichkeep,keeplist,path,suffix)
-            info(2, whichkeep)
+            info(1, whichkeep)
             for k,_ in pairs(keeplist) do
-                info(2,"\t"..path.."/"..suffix.."."..k)
+                info(1,"\t"..path.."/"..suffix.."."..k)
             end
         end
         displayKeeps("Keeping snapshots:", snapkeeps, runtime.snapshot_dir, name)
         displayKeeps("Keeping backups:", backupkeeps, runtime.backup_dir, name)
     end
 
-    info(1,"Done")
+    info(1, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 end
 
-info(1, "Backups completed.  Archive Timestamp: "..timestamp)
+info(1, "\nBackups completed.  Archive Timestamp: "..timestamp)
 
