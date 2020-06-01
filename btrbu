@@ -676,6 +676,15 @@ local function getKeepList(ts_list)
     return keeps
 end
 
+-- Little helper function to consolidate some common processing
+local function keepHelper(list, keeps, name, path)
+    for _,v in ipairs(list) do
+        if not keeps[v] then
+            btrfs_sv_delete(path.."/"..name.."."..v)
+        end
+    end
+end
+
 -- fixup the snapshot_dir, backup_dir values and subvolume directories- convert
 -- leading '~' and '.' to the appropriate value so we have a full path
 -- specfication
@@ -691,6 +700,7 @@ local function pathFixup(path)
     -- nothing to do
     return path
 end
+
 runtime.snapshot_dir = pathFixup(runtime.snapshot_dir)
 runtime.backup_dir = pathFixup(runtime.backup_dir)
 for name, path in pairs(runtime.subvolumes) do
@@ -735,13 +745,11 @@ if runtime.snaps_only then
     info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
     for name, _ in pairs(runtime.subvolumes) do
         local keeps = getKeepList(snaps[name])
-        for _,v in ipairs(snaps[name]) do
-            if not keeps[v] then 
-                btrfs_sv_delete(runtime.snapshot_dir.."/"..name.."."..v)
+        keepHelper(snaps[name], keeps, name, runtime.snapshot_dir)
+        if runtime.verbose >= 1 then
+            for k,_ in pairs(keeps) do 
+                info(2,"Keeping: "..runtime.snapshot_dir.."/"..name.."."..k) 
             end
-        end
-        for k,_ in pairs(keeps) do 
-            info(2,"Keeping: "..runtime.snapshot_dir.."/"..name.."."..k) 
         end
     end
 
@@ -791,19 +799,12 @@ for name, _ in pairs(runtime.subvolumes) do
     info(1, "Keep policy:")
     info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
     -- apply keep policy to snapshots
-    local function keepHelper(list, keeps, path)
-        for _,v in ipairs(list[name]) do
-            if not keeps[v] then
-                btrfs_sv_delete(path.."/"..name.."."..v)
-            end
-        end
-    end
-    keepHelper(snaps, snapkeeps, runtime.snapshot_dir)
-    keepHelper(backups, backupkeeps, runtime.backup_dir)
+    keepHelper(snaps[name], snapkeeps, name, runtime.snapshot_dir)
+    keepHelper(backups[name], backupkeeps, name, runtime.backup_dir)
 
     -- show what we're keeping
     -- only do this if verbose is sufficiently high, otherwise just wasting time
-    if runtime.verbose > 1 then
+    if runtime.verbose >= 1 then
         local function displayKeeps(whichkeep,keeplist,path,suffix)
             info(1, whichkeep)
             for k,_ in pairs(keeplist) do
