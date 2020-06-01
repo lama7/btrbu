@@ -96,7 +96,7 @@ Removes snapshots and backups according to the keep_daily, keep_weekly and keep_
     },
     dryrun = {
                      help_text = [[
-No actual operations are peroformed.  Verbosity is set to max and so the user can see what actions would be peformed.  Because of how btrbu is implemented, the dryrun assumes the snapshots and backups will be performed without error.
+No actual operations are performed.  Verbosity is set to max so the user can see what actions would be peformed.  Because of how btrbu is implemented, the dryrun assumes all btrfs level actions will complete without error.
 ]],
                      args = 0,
     },

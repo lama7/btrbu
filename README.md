@@ -5,6 +5,8 @@ btrbu is another btrfs snapshot and backup script.  I wrote it because my needs 
 
 The information btrbu needs is minimal- a snapshot directory, an archive name and a subvolume that corresponds to that name.  If a backup is desired, then a backup path must also be specified.  For now, it is assumed that the destination is a btrfs file system since the script takes advantage of btrfs send/receive commands.
 
+Another (I think!) nice "feature" of btrbu is that it doesn't rely on any external databases or files for information about the system.  It simply gets all it's needed information from the system and goes from there.  So external dependencies beyond lua are minimized.
+
 Usage
 -----
 
@@ -27,7 +29,7 @@ These archives will share the same snapshot and backup destination, but obviousl
 Configuration Files
 -------------------
 
-At some point, if backing up several differnt subvolumes for instanct, a configuration file might become desirable to make the command line more manageable.  btrbu will look for a configufation file in `~/.config/btrbu-conf` if no file is specified on the command line.  Alternatively:
+At some point, if backing up several different subvolumes for instance, a configuration file might become desirable to make the command line more manageable.  btrbu will look for a configufation file in `~/.config/btrbu-conf` if no file is specified on the command line.  Alternatively:
 
     btrbu --config=/path/to/myconfig
 
@@ -80,6 +82,6 @@ An example of a configuration file with a keep policy:
     }
 ```
 
-Note that btrbu does NOT have a keep policy below a 1 day timeframe.  So multiple backups within the same day will be subject to pruning by any keep policy.  The most recent snapshot/backups from that day will be kept in those cases.
+btrbu does NOT have a keep policy below a 1 day timeframe.  So multiple backups within the same day will be subject to pruning by any keep policy.  The most recent snapshot/backups from that day will be kept in those cases.
 
 [borgbackup]: https://borgbackup.org
