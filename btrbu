@@ -7,8 +7,7 @@ local os = require("os")
 local table = table -- for faster access
 
 -- local requires
-local seconds_per_day = 86400
-local seconds_per_week = 604800
+local MAX_INFO = 3
 
 usage = {
 [[
@@ -94,6 +93,12 @@ Option to turn on output about what is happening.  The default is no output, so 
 Removes snapshots and backups according to the keep_daily, keep_weekly and keep_monthly options.    
 ]],
                      args = 1,
+    },
+    dryrun = {
+                     help_text = [[
+No actual operations are peroformed.  Verbosity is set to max and so the user can see what actions would be peformed.  Because of how btrbu is implemented, the dryrun assumes the snapshots and backups will be performed without error.
+]],
+                     args = 0,
     },
 }
 
@@ -330,7 +335,13 @@ if settings then
     else
         runtime.verbose = tonumber(runtime.verbose)
     end
+    if not runtime.dryrun then
+        runtime.dryrun = cf_settings.dryrun or nil
+    end 
 end
+
+-- if we're doing a dryrun, set verbose to max 
+if runtime.dryrun then runtime.verbose = MAX_INFO end
 
 -- Sanity check- command line options and config file, if it exists, have been
 -- processed.  In order to try to do anything, we need a snapshot destination,
@@ -341,12 +352,9 @@ end
 -- Also, the "--help" option is an override of sorts.  If that option was listed
 -- on the command line, we display the usage text and exit.  Don't perform any
 -- actions, even if we have enough to do so.
-if ( not runtime.snapshot_dir or 
-     not runtime.backup_dir or 
-     next(runtime.subvolumes) == nil) or 
+if ( not runtime.snapshot_dir or not runtime.backup_dir or next(runtime.subvolumes) == nil) or 
    ( runtime.snaps_only and 
-     ( not runtime.snapshot_dir or next(runtime.subvolumes) == nil ) ) or 
-   runtime.help then
+     ( not runtime.snapshot_dir or next(runtime.subvolumes) == nil ) ) or runtime.help then
        -- DISPLAY USAGE TEXT AND EXIT
        -- we need to create a sorted table first...
        local sorted_opts = {}
@@ -362,8 +370,7 @@ if ( not runtime.snapshot_dir or
                                              -- tables work, since a '-' is not
                                              -- valid character for variables
                                              -- etc.
-           table.insert(usage, 
-                        s..string.rep(" ", 18-s:len())..btrbu_opts[k].help_text)
+           table.insert(usage, s..string.rep(" ", 18-s:len())..btrbu_opts[k].help_text)
        end
        -- get current terminal width
        local fd = io.popen("tput cols")
@@ -416,9 +423,14 @@ end
 --]]
 local function doit(cmd)
     info(2,cmd)
-    fd = io.popen(cmd)
-    local rs = fd:read("*a")
-    fd:close()
+    local rs
+    if not runtime.dryrun then
+        fd = io.popen(cmd)
+        rs = fd:read("*a")
+        fd:close()
+    else
+        rs = "DRYRUN- no action performed"
+    end
     info(3,rs)
     return rs
 end
@@ -465,7 +477,7 @@ end
 
 -- Builds a table of archive names along with all the timestamps associated with those archives
 -- Typically, this will be either a snapshot directory or a backup directory
-local function buildTbl(path)
+local function buildTbl(path, current_ts)
     local fd = io.popen("find "..path.." -maxdepth 1 -print")
     local blob = fd:read("*a")
     fd:close()
@@ -479,8 +491,13 @@ local function buildTbl(path)
             table.insert(t[name], ts)
         end
     end
+    -- if doing a dryrun, then find won't return anything with the latest timestamp,
+    -- so we need to insert it here 
     -- make sure the table timestamp tables are sorted
-    for name, _ in pairs(t) do table.sort(t[name]) end
+    for name, _ in pairs(t) do 
+        if runtime.dryrun then table.insert(t[name], current_ts) end
+        table.sort(t[name]) 
+    end
 
     return t
 end
@@ -707,7 +724,7 @@ info(1, "########################################")
 -- specifically "name.YYYYMMDDhhmm"
 -- create a table from the from the snapshot directory, splitting the name up 
 -- between the name and timestamp.  We'll need that to help with pruning
-snaps = buildTbl(runtime.snapshot_dir)
+snaps = buildTbl(runtime.snapshot_dir, timestamp)
 
 -- check if we're doing snapshots only
 if runtime.snaps_only then
@@ -733,7 +750,7 @@ if runtime.snaps_only then
 end
 
 -- doing snapshots AND backups...
-backups = buildTbl(runtime.backup_dir)
+backups = buildTbl(runtime.backup_dir, timestamp)
 
 -- now backup and prune our snapshots, and do our incremental backups
 for name, _ in pairs(runtime.subvolumes) do
@@ -766,7 +783,7 @@ for name, _ in pairs(runtime.subvolumes) do
     end
 
     -- update the backup keep list now that we've added a backup
-    backups = buildTbl(runtime.backup_dir)
+    backups = buildTbl(runtime.backup_dir, timestamp)
     backupkeeps = getKeepList(backups[name])
 
     -- now prune the snapshot and backup directories
