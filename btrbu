@@ -505,9 +505,9 @@ end
 --]]
 local function btrfs_send(p,s,d)
     if not p then
-        return doit("btrfs send "..s.." | btrfs receive "..d)
+        return doit("{ btrfs send "..s.." | btrfs receive "..d.." ; } 2>&1")
     else
-        return doit("btrfs send -p "..p.." "..s.." | btrfs receive "..d)
+        return doit("{ btrfs send -p "..p.." "..s.." | btrfs receive "..d.." ; } 2>&1")
     end
 end
 
