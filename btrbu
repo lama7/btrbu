@@ -90,9 +90,9 @@ Option to turn on output about what is happening.  The default is no output, so 
     },
     prune = {
                      help_text = [[
-Removes snapshots and backups according to the keep_daily, keep_weekly and keep_monthly options.    
+*** THIS REMOVES SNAPSHOTS AND BACKUPS- BE SURE THE RESULT IS KNOWN BY USING THE `dryrun` OPTION WITH THE DESIRED KEEP POLICY.  YOU HAVE BEEN WARNED. *** Applies keep policy without taking any snapshots or performing backups for the current run.  Can be used blank or a timestamp can be assigned.  The timestamp must be of the form `YYYYMMDDhhmm`.  If a timestamp is supplied then it applies the keep policy with the supplied timestamp used as the MOST RECENT entry.  Otherwise, a current timestamp is used.  When used with `dryrun`, useful for seeing the results of a keep policy on a large corpus of snapshots and backups.  Use of this option prevents any other actions, such as taking snapshots or performing backups, from occurring.
 ]],
-                     args = 1,
+                     args = "?",
     },
     dryrun = {
                      help_text = [[
@@ -279,7 +279,7 @@ if #options ~= 0 then
             if not btrbu_opts[o] then
                 print("Invalid Option: "..opt)
                 return
-            elseif btrbu_opts[o].args ~= 0 then
+            elseif btrbu_opts[o].args ~= 0 and btrbu_opts[o].args ~= "?" then
                 print("Option "..opt.." expects a value, none given.")
                 return
             else
@@ -538,7 +538,7 @@ local function buildTbl(path, current_ts)
             if not t[name] then
                 t[name] = {}
             end
-            table.insert(t[name], ts)
+            if ts < current_ts then table.insert(t[name], ts) end
         end
     end
     -- if doing a dryrun, then find won't return anything with the latest timestamp,
@@ -766,6 +766,55 @@ local timestamp = string.format("%u%02u%02u%02u%02u",
                                 t.hour, 
                                 t.min)
 
+-- if prune option is selected, perform it and exit
+if runtime.prune then
+    if runtime.prune ~= 1 then
+        if runtime.prune:match("^%d%d%d%d%d%d%d%d%d%d%d%d$") then
+            timestamp = runtime.prune
+        else
+            print("Invalid timestamp format for prune")
+            print("Prune argument should be assigned a timestamp formatted as 'YYYYMMDDhhmm'")
+            print("Aborting")
+            return
+        end
+    end
+
+    local snaps = buildTbl(runtime.snapshot_dir, timestamp)
+    local backups = buildTbl(runtime.backup_dir, timestamp)
+
+    for name, _ in pairs(runtime.subvolumes) do
+        local snapkeeps = getKeepList(snaps[name])
+        local backupkeeps = getKeepList(backups[name])
+
+        info(1, "----------------------------------------")
+        info(1, "Timestamp: "..timestamp)
+        info(1, "Keep policy:")
+        info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
+        -- apply keep policy to snapshots
+        keepHelper(snaps[name], snapkeeps, name, runtime.snapshot_dir)
+        keepHelper(backups[name], backupkeeps, name, runtime.backup_dir)
+
+        -- show what we're keeping
+        -- only do this if verbose is sufficiently high, otherwise just wasting time
+        if runtime.verbose >= 1 then
+            local function displayKeeps(whichkeep,keeplist,path,suffix)
+                info(1, whichkeep)
+                for k,_ in pairs(keeplist) do
+                    info(1,"\t"..path.."/"..suffix.."."..k)
+                end
+            end
+            displayKeeps("Keeping snapshots:", snapkeeps, runtime.snapshot_dir, name)
+            displayKeeps("Keeping backups:", backupkeeps, runtime.backup_dir, name)
+        end
+
+        info(1, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+        
+    end
+
+    info(1, "Done")
+    return
+end
+
 -- start by taking new snapshots of the subvolumes specified 
 info(1, "########################################")
 info(1, "Taking snapshots.....Timestamp:  "..timestamp)
@@ -796,6 +845,7 @@ if runtime.snaps_only then
     for name, _ in pairs(runtime.subvolumes) do
         local keeps = getKeepList(snaps[name])
         keepHelper(snaps[name], keeps, name, runtime.snapshot_dir)
+
         if runtime.verbose >= 1 then
             for k,_ in pairs(keeps) do 
                 info(2,"Keeping: "..runtime.snapshot_dir.."/"..name.."."..k) 
@@ -846,6 +896,7 @@ for name, _ in pairs(runtime.subvolumes) do
 
     -- now prune the snapshot and backup directories
     info(1, "----------------------------------------")
+    info(1, "Timestamp: "..timestamp)
     info(1, "Keep policy:")
     info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
     -- apply keep policy to snapshots
