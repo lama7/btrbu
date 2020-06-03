@@ -726,8 +726,32 @@ local function getKeepList(ts_list)
     return keeps
 end
 
+-- function to display keep information
+local function showKeeps(name, snapkeeps, backupkeeps, ts)
+    info(1, "----------------------------------------")
+    info(1, "Archive: "..name)
+    info(1, "Timestamp: "..ts)
+    info(1, "Keep Policy:")
+    info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
+    -- show what we're keeping
+    -- only do this if verbose is sufficiently high, otherwise just wasting time
+    if runtime.verbose >= 1 then
+        local function displayKeeps(whichkeep,keeplist,path,suffix)
+            info(1, whichkeep)
+            for k,_ in pairs(keeplist) do
+                info(1,"\t"..path.."/"..suffix.."."..k)
+            end
+        end
+        displayKeeps("Keeping snapshots:", snapkeeps, runtime.snapshot_dir, name)
+        if backupkeeps then
+            displayKeeps("Keeping backups:", backupkeeps, runtime.backup_dir, name)
+        end
+    end
+end
+
 -- Little helper function to consolidate some common processing
-local function keepHelper(list, keeps, name, path)
+local function applyKeepPolicy(list, keeps, name, path)
+    info(2, "Removing Subvolumes")
     for _,v in ipairs(list) do
         if not keeps[v] then
             btrfs_sv_delete(path.."/"..name.."."..v)
@@ -785,30 +809,13 @@ if runtime.prune then
     for name, _ in pairs(runtime.subvolumes) do
         local snapkeeps = getKeepList(snaps[name])
         local backupkeeps = getKeepList(backups[name])
+        showKeeps(name, snapkeeps, backupkeeps, timestamp)
 
-        info(1, "----------------------------------------")
-        info(1, "Timestamp: "..timestamp)
-        info(1, "Keep policy:")
-        info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
         -- apply keep policy to snapshots
-        keepHelper(snaps[name], snapkeeps, name, runtime.snapshot_dir)
-        keepHelper(backups[name], backupkeeps, name, runtime.backup_dir)
-
-        -- show what we're keeping
-        -- only do this if verbose is sufficiently high, otherwise just wasting time
-        if runtime.verbose >= 1 then
-            local function displayKeeps(whichkeep,keeplist,path,suffix)
-                info(1, whichkeep)
-                for k,_ in pairs(keeplist) do
-                    info(1,"\t"..path.."/"..suffix.."."..k)
-                end
-            end
-            displayKeeps("Keeping snapshots:", snapkeeps, runtime.snapshot_dir, name)
-            displayKeeps("Keeping backups:", backupkeeps, runtime.backup_dir, name)
-        end
+        applyKeepPolicy(snaps[name], snapkeeps, name, runtime.snapshot_dir)
+        applyKeepPolicy(backups[name], backupkeeps, name, runtime.backup_dir)
 
         info(1, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-        
     end
 
     info(1, "Done")
@@ -839,18 +846,10 @@ snaps = buildTbl(runtime.snapshot_dir, timestamp)
 if runtime.snaps_only then
     -- yup, snaps only, so all done
     info(1, "Snapshots only specified")
-    info(1, "----------------------------------------")
-    info(1, "Keep Policy:")
-    info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
     for name, _ in pairs(runtime.subvolumes) do
         local keeps = getKeepList(snaps[name])
-        keepHelper(snaps[name], keeps, name, runtime.snapshot_dir)
-
-        if runtime.verbose >= 1 then
-            for k,_ in pairs(keeps) do 
-                info(2,"Keeping: "..runtime.snapshot_dir.."/"..name.."."..k) 
-            end
-        end
+        showKeeps(name, keeps, nil, timestamp)
+        applyKeepPolicy(snaps[name], keeps, name, runtime.snapshot_dir)
     end
 
     info(1,"Done")
@@ -895,26 +894,11 @@ for name, _ in pairs(runtime.subvolumes) do
     backupkeeps = getKeepList(backups[name])
 
     -- now prune the snapshot and backup directories
-    info(1, "----------------------------------------")
-    info(1, "Timestamp: "..timestamp)
-    info(1, "Keep policy:")
-    info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
-    -- apply keep policy to snapshots
-    keepHelper(snaps[name], snapkeeps, name, runtime.snapshot_dir)
-    keepHelper(backups[name], backupkeeps, name, runtime.backup_dir)
+    showKeeps(name, snapkeeps, backupkeeps, timestamp)
 
-    -- show what we're keeping
-    -- only do this if verbose is sufficiently high, otherwise just wasting time
-    if runtime.verbose >= 1 then
-        local function displayKeeps(whichkeep,keeplist,path,suffix)
-            info(1, whichkeep)
-            for k,_ in pairs(keeplist) do
-                info(1,"\t"..path.."/"..suffix.."."..k)
-            end
-        end
-        displayKeeps("Keeping snapshots:", snapkeeps, runtime.snapshot_dir, name)
-        displayKeeps("Keeping backups:", backupkeeps, runtime.backup_dir, name)
-    end
+    -- apply keep policy to snapshots
+    applyKeepPolicy(snaps[name], snapkeeps, name, runtime.snapshot_dir)
+    applyKeepPolicy(backups[name], backupkeeps, name, runtime.backup_dir)
 
     info(1, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 end
