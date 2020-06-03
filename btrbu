@@ -298,7 +298,16 @@ if #options ~= 0 then
                 print("No value should be assigned to option: "..k:gsub("_","-"))
                 return
             else
-                runtime[k] = v
+                if v == "DEBUG" then
+                    if k ~= "verbose" then 
+                        print("Invalid value '"..v.."' for option --"..k)
+                        return
+                    else
+                        runtime.verbose = MAX_INFO
+                    end
+                else
+                    runtime[k] = v
+                end
             end
         end
     end
