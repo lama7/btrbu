@@ -471,8 +471,8 @@ end
 -- ########################################
 -- btrfs command functions
 
-local function info(l, text)
-    if runtime.verbose ~= 0 and runtime.verbose >= l then
+local function info(level, text)
+    if runtime.verbose ~= 0 and runtime.verbose >= level then
         print(text)
     end
 end
@@ -547,7 +547,7 @@ local function buildTbl(path, current_ts)
             if not t[name] then
                 t[name] = {}
             end
-            if ts < current_ts then table.insert(t[name], ts) end
+            if ts <= current_ts then table.insert(t[name], ts) end
         end
     end
     -- if doing a dryrun, then find won't return anything with the latest timestamp,
