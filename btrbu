@@ -306,6 +306,17 @@ if #options ~= 0 then
                         runtime.verbose = MAX_INFO
                     end
                 else
+                    local numbers_only = { keep_daily = 1, 
+                                           keep_weekly = 1,
+                                           keep_monthly = 1, }
+                    if numbers_only[k] then
+                        local chk = tonumber(v)
+                        if not chk then
+                            print("Invalid value "..v.." for option "..k..": should be a number.")
+                            return
+                        end
+                        v = chk
+                    end
                     runtime[k] = v
                 end
             end
@@ -562,16 +573,15 @@ local function buildTbl(path, current_ts)
 end
 
 --[[
-    Returns the most recent timestamp that is common to both the snapkeeps and 
-    backups keeps.  Note that backupkeeps will NOT have the current timestamp in it since we haven't
+    Returns the most recent timestamp that is common to both the snaps and 
+    backups.  Note that backups will NOT have the current timestamp in it since we haven't
     tried to do a backup yet.  Btrfs needs a common archive to work with when generating incremental
     backups.
 --]]
-local function getParent(snapkeept, backupkeept, current_ts)
-    
+local function getParentfromKeeps(snapkeept, backupkeept, current_ts)
     local max = nil
     for k, _ in pairs(snapkeept) do
-        -- if this snapshot timestamp is in the backup keep list, it's a candidate, otherwise move on
+        -- if this snapshot timestamp is in the backup list, it's a candidate, otherwise move on
         if backupkeept[k] then
             if not max and k ~= current_ts then max = k
             elseif k < current_ts then max = tostring(math.max(max, k))
@@ -580,6 +590,21 @@ local function getParent(snapkeept, backupkeept, current_ts)
     end
 
     return max
+end
+
+--[[
+    Returns identical value to above function, except it takes 2 lists instead of tables.  It just 
+    massages the list into a table and then calls the above function for processing
+--]]
+local function getParentfromCurrent(snaplist, backuplist, current_ts)
+    local function toTbl(list)
+        local t = {}
+        for _,v in ipairs(list) do t[v] = 1 end
+        return t
+    end
+
+    -- just taking advantage of common processing, we just massaged things to work with this function
+    return getParentfromKeeps(toTbl(snaplist), toTbl(backuplist), current_ts)
 end
 
 --[[
@@ -629,8 +654,8 @@ local function getKeeps(timestamps, keep_tbl, max_keeps, ts_start, interval)
     return oldest_keep
 end
 
-local function getKeepList(ts_list)
-    -- these are some support functions that only getKeepList uses...
+local function bldKeepList(ts_list)
+    -- these are some support functions that only bldKeepList uses...
     --################################################################################
     -- returns a formatted timestamp for days_cnt days ago.
     -- The timestamp is set to the final minute of that day
@@ -701,9 +726,12 @@ local function getKeepList(ts_list)
     end
 
     --################################################################################
-    -- start of getKeepList code...
+    -- start of bldKeepList code...
     local keeps = {}
     local oldest_keep = nil
+    -- make sure we keep the most recent timestamp, which should be the one on the top
+    -- of the list
+    keeps[ts_list[#ts_list]] = 1
 
     -- start with daily...
     -- always keep the most recent timestamp, which will be the last one
@@ -711,7 +739,7 @@ local function getKeepList(ts_list)
         oldest_keep = getKeeps(ts_list,
                                keeps,
                                runtime.keep_daily,
-                               ts_list[#ts_list],
+                               prevDay(ts_list[#ts_list], 1),
                                prevDay
                               )
     end
@@ -816,8 +844,8 @@ if runtime.prune then
     local backups = buildTbl(runtime.backup_dir, timestamp)
 
     for name, _ in pairs(runtime.subvolumes) do
-        local snapkeeps = getKeepList(snaps[name])
-        local backupkeeps = getKeepList(backups[name])
+        local snapkeeps = bldKeepList(snaps[name])
+        local backupkeeps = bldKeepList(backups[name])
         showKeeps(name, snapkeeps, backupkeeps, timestamp)
 
         -- apply keep policy to snapshots
@@ -856,7 +884,7 @@ if runtime.snaps_only then
     -- yup, snaps only, so all done
     info(1, "Snapshots only specified")
     for name, _ in pairs(runtime.subvolumes) do
-        local keeps = getKeepList(snaps[name])
+        local keeps = bldKeepList(snaps[name])
         showKeeps(name, keeps, nil, timestamp)
         applyKeepPolicy(snaps[name], keeps, name, runtime.snapshot_dir)
     end
@@ -877,12 +905,16 @@ for name, _ in pairs(runtime.subvolumes) do
     local dest = runtime.backup_dir
 
     -- get the parent for the current archive
-    local snapkeeps = getKeepList(snaps[name])
+    local snapkeeps = bldKeepList(snaps[name])
     local backupkeeps = nil
     local parent_ts = nil
     if backups[name] then 
-        backupkeeps = getKeepList(backups[name]) 
-        parent_ts = getParent(snapkeeps, backupkeeps, timestamp)
+        backupkeeps = bldKeepList(backups[name]) 
+        if ( runtime.keep_daily + runtime.keep_monthly + runtime.keep_monthly ) == 0 then
+            parent_ts = getParentfromCurrent(snaps[name], backups[name], timestamp)
+        else
+            parent_ts = getParentfromKeeps(snapkeeps, backupkeeps, timestamp)
+        end
     end
     info(1, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     -- in no valid parent, then perform a full backup, otherwise perform an incremental backup
@@ -900,7 +932,7 @@ for name, _ in pairs(runtime.subvolumes) do
 
     -- update the backup keep list now that we've added a backup
     backups = buildTbl(runtime.backup_dir, timestamp)
-    backupkeeps = getKeepList(backups[name])
+    backupkeeps = bldKeepList(backups[name])
 
     -- now prune the snapshot and backup directories
     showKeeps(name, snapkeeps, backupkeeps, timestamp)
