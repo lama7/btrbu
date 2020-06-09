@@ -564,10 +564,12 @@ local function buildTbl(path, current_ts)
         end
     end
     -- if doing a dryrun, then find won't return anything with the latest timestamp,
-    -- so we need to insert it here 
+    -- so we need to insert it here as a "pretend" file for the code to work with
+    -- exception is if we're pruning, in which case we don't force the inserton of the "pretend" file
+    -- since prune is run by itself- other options/actions are not performed
     -- make sure the table timestamp tables are sorted
     for name, _ in pairs(t) do 
-        if runtime.dryrun then table.insert(t[name], current_ts) end
+        if runtime.dryrun and not runtime.prune then table.insert(t[name], current_ts) end
         table.sort(t[name]) 
     end
 
@@ -731,35 +733,76 @@ local function bldKeepList(ts_list)
     -- start of bldKeepList code...
     local keeps = {}
     local oldest_keep = nil
-    -- make sure we keep the most recent timestamp, which should be the one on the top
-    -- of the list
-    keeps[ts_list[#ts_list]] = 1
+    -- check for case of 0 keeps specified.  In this instance, we should always return the latest 
+    -- timestamp as the only keep
+    if runtime.keep_daily + runtime.keep_weekly + runtime.keep_monthly == 0 then
+        -- if this is a manual prune (prune options specified on command line, then nothing to do
+        if runtime.prune then 
+            return nil
+        else
+            -- not a manual prune, keep the latest timestamp
+            keeps[ts_list[#ts_list]] = 1
+            return keeps
+        end
+    end
 
-    -- start with daily...
-    -- always keep the most recent timestamp, which will be the last one
+    -- at least 1 keep is specified, so keep the most current timestamp
+    keeps[ts_list[#ts_list]] = 1
+    -- at this point, we have some number of keeps specified and the most recent timestamp has already
+    -- been added to the keep list.  This timestamp counts against the shortest interval that keeps are
+    -- specified for.  At this point, we could be pruning because of the command line OR this could be
+    -- the prune after snapshots/backups have been completed.
+    -- 1st, check the case where only 1 keep is specified at any time interval. In that case. we're 
+    -- already done since we've already kept the most recent timestamp
+    if runtime.keep_daily + runtime.keep_weekly + runtime.keep_monthly == 1 then
+        return keeps
+    end
+    -- more than 1 keep specified, so start at the daily interval and work our way out... 
+    -- REMEMBER: WE ALREADY HAVE THE MOST RECENT TIMESTAMP AS A KEEP AT THIS POINT
     if runtime.keep_daily ~= 0 then
-        oldest_keep = getKeeps(ts_list,
-                               keeps,
-                               runtime.keep_daily,
-                               prevDay(ts_list[#ts_list], 1),
-                               prevDay
-                              )
+        if runtime.keep_daily == 1 then
+            -- already have the daily keep, so setup oldest_keep and continue
+            oldest_keep = ts_list[#ts_list]
+        else
+            oldest_keep = getKeeps(ts_list,
+                                   keeps,
+                                   runtime.keep_daily-1, -- -1 for the current timestamp
+                                   prevDay(ts_list[#ts_list], 1),
+                                   prevDay
+                                  )
+        end
     end
     if runtime.keep_weekly ~= 0 then
-        oldest_keep = getKeeps(ts_list,
-                               keeps,
-                               runtime.keep_weekly,
-                               prevWeek(prevDay(oldest_keep or ts_list[#ts_list], 1), 0),
-                               prevWeek
-                              )
+        local wkeepn = runtime.keep_weekly
+        -- if daily keeps is 0, then the current timestamp counts against the weekly keeps
+        -- otherwise, proceed as normal
+        if runtime.keep_daily == 0 then wkeepn = wkeepn - 1 end
+        if wkeepn == 0 then
+            -- means we keep 1 weekly and the current timestamp is that keep, so setup
+            -- oldest keep and continue
+            oldest_keep = ts_list[#ts_list]
+        else
+            oldest_keep = getKeeps(ts_list,
+                                   keeps,
+                                   wkeepn,
+                                   prevWeek(prevDay(oldest_keep or ts_list[#ts_list], 1), 0),
+                                   prevWeek
+                                  )
+        end
     end
     if runtime.keep_monthly ~= 0 then
-        getKeeps(ts_list,
-                 keeps,
-                 runtime.keep_monthly,
-                 prevMonth(prevDay(oldest_keep or ts_list[#ts_list], 1), 0),
-                 prevMonth
-                )
+        local mkeepn = runtime.keep_monthly
+        -- if there were no daily or weekly keeps, then the current timestamp counts against
+        -- the monthly keep
+        if runtime.keep_daily + runtime.keep_weekly == 0 then mkeepn = mkeepn - 1 end
+        if mkeepn ~= 0 then
+            getKeeps(ts_list,
+                     keeps,
+                     mkeepn,
+                     prevMonth(prevDay(oldest_keep or ts_list[#ts_list], 1), 0),
+                     prevMonth
+                    )
+        end
     end
 
     return keeps
@@ -853,6 +896,10 @@ if runtime.prune then
     for name, _ in pairs(runtime.subvolumes) do
         local snapkeeps = bldKeepList(snaps[name])
         local backupkeeps = bldKeepList(backups[name])
+        if not snapkeeps and not backupkeeps then 
+            print("No keeps specified, nothing to do.")
+            return
+        end
         showKeeps(name, snapkeeps, backupkeeps, timestamp)
 
         -- apply keep policy to snapshots
