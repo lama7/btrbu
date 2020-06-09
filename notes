@@ -1,0 +1,9 @@
+dev branch-
+    - Want to add "hooks" for snapshots and backups so a user can specify another command to be run
+      after the snapshots/backups are done
+ 
+prune branch-
+    - change the prune option to specify a particular timestamp, or a list of timestamps to prune
+    - this should also provide for some kind of ability to control WHAT is removed based on the timestamp
+    - for instance, remove only snapshots with these timestamps, or only backups... or only snapshots 
+      with a certain name
