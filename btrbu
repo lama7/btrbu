@@ -545,8 +545,10 @@ local function tstoTime(ts)
     return os.time(t)
 end
 
--- Builds a table of archive names along with all the timestamps associated with those archives
--- Typically, this will be either a snapshot directory or a backup directory
+--[[
+    Builds a table of archive names along with all the timestamps associated with those archives
+    Typically, this will be either a snapshot directory or a backup directory
+--]]
 local function buildTbl(path, current_ts)
     local fd = io.popen("find "..path.." -maxdepth 1 -print")
     local blob = fd:read("*a")
@@ -763,7 +765,9 @@ local function bldKeepList(ts_list)
     return keeps
 end
 
--- function to display keep information
+--[[
+    function to display keep information
+--]]
 local function showKeeps(name, snapkeeps, backupkeeps, ts)
     info(1, "----------------------------------------")
     info(1, "Archive: "..name)
@@ -786,7 +790,9 @@ local function showKeeps(name, snapkeeps, backupkeeps, ts)
     end
 end
 
--- Little helper function to consolidate some common processing
+--[[
+    Little helper function to consolidate some common processing
+--]]
 local function applyKeepPolicy(list, keeps, name, path)
     info(2, "Removing Subvolumes")
     for _,v in ipairs(list) do
@@ -795,10 +801,11 @@ local function applyKeepPolicy(list, keeps, name, path)
         end
     end
 end
-
--- fixup the snapshot_dir, backup_dir values and subvolume directories- convert
--- leading '~' and '.' to the appropriate value so we have a full path
--- specfication
+ 
+--[[
+    fixup the snapshot_dir, backup_dir values and subvolume directories- convert
+    leading '~' and '.' to the appropriate value so we have a full path specfication
+--]]
 local function pathFixup(path)
     local m = path:match("^~(.*)$") 
     if m then
