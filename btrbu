@@ -899,9 +899,20 @@ end
     completed and we can safely continue.
 --]]
 local function hook ( cmd, inst )
+    -- generate a random number for the semaphore file name...
+    local semfile = "/tmp/semfile"..math.random(os.time()+os.clock()*1000000)
+    local f = io.open(semfile)
+    -- do our best to get a unique name for our semaphore file, if other instances of btrbu are
+    -- started within a second(like from different cron configs), this might not be enough...
+    -- depends on how we do with the seeding we use
+    while f do
+        f:close()
+        semfile = "/tmp/semfile"..math.random(os.time()+os.clock()*1000000)
+        f = io.open(semfile)
+    end
+
     if not runtime.dryrun then
         info(1, "Starting hook:  "..cmd)
-        local semfile = "/tmp/semfile"..inst
         cmd = cmd.." ; touch "..semfile
         local f = io.popen(cmd)
         while 1 do
@@ -919,7 +930,8 @@ local function hook ( cmd, inst )
         -- to at least let the coroutine do it's thing once, we'll just yield and then exit rather
         -- than looping.  Alternatively, we could loop a set number of times so the coroutine stuff
         -- can get exercised... 
-        info(3, "DRYRUN- hook to execute: "..cmd)
+        info(MAX_INFO, "Semfile: "..semfile)
+        info(MAX_INFO, "DRYRUN- hook to execute: "..cmd)
         coroutine.yield(0)
     end
     return inst
@@ -1028,6 +1040,7 @@ snaps = buildTbl(runtime.snapshot_dir, timestamp)
 -- run snaphooks now...
 if runtime.snaphooks then
     print("SNAPHOOKS!")
+    math.randomseed(os.time()+os.clock()*1000000)  -- random number generator is used in hook function
     for name, _ in pairs(runtime.subvolumes) do
         if runtime.snaphooks[name] then
             -- just make sure something is there
