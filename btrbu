@@ -100,6 +100,12 @@ No actual operations are performed.  Verbosity is set to max so the user can see
 ]],
                      args = 0,
     },
+    sudo = {
+                     help_text = [[
+This option will cause the individual btrfs commands to be prepended with "sudo -n."  For this to work the user must have the appropriate permissions setup in the /etc/suoders file.  Useful for running btrbu as a normal user.  This option only affects the btrfs commands, not any hooks that might be configured.
+]],
+                     args = 0,
+    },
 }
 
 local btrbu_optcnt = 0
@@ -366,6 +372,12 @@ if settings then
         -- grab the whole table from config file
         runtime.subvolumes = cf_settings.subvolumes
     end
+ 
+    -- setup snaphooks and backuphooks if present.  Note that these are available ONLY from a config
+    -- file.
+    runtime.snaphooks = cf_settings.snaphooks
+    runtime.backuphooks = cf_settings.backuphooks
+
     -- go through and setup config file settings- if the option was already 
     -- setup on the command line, leave it
     if not runtime.snapshot_dir then
@@ -395,6 +407,9 @@ if settings then
     if not runtime.dryrun then
         runtime.dryrun = cf_settings.dryrun or nil
     end 
+    if not runtime.sudo then
+        runtime.sudo = cf_settings.sudo or nil
+    end
 end
 
 -- if we're doing a dryrun, set verbose to max 
@@ -491,7 +506,11 @@ end
 --[[
 
 --]]
+local btrbu_error = ""
 local function doit(cmd)
+    if runtime.sudo then
+        cmd = cmd:gsub("btrfs", "sudo -n btrfs")
+    end
     info(2,cmd)
     local rs
     if not runtime.dryrun then
@@ -502,21 +521,31 @@ local function doit(cmd)
         rs = "DRYRUN- no action performed"
     end
     info(3,rs)
-    return rs
+    -- look for any btrfs errors first
+    btrbu_error = rs:match("ERROR:%s*(.*)")
+    if not btrbu_error then
+        -- now check if sudo was setup properly...
+        btrbu_error = rs:match("sudo: a password is required")
+    end
+    if btrbu_error then
+        return false
+    else
+        return rs
+    end
 end
 
 --[[
 
 --]]
 local function btrfs_sv_delete(sv)
-    return doit("btrfs subvolume delete -c "..sv)
+    return doit("btrfs subvolume delete -c "..sv.." 2>&1")
 end
 
 --[[
 
 --]]
 local function btrfs_sv_snapshot(s,d)
-    return doit("btrfs subvolume snapshot -r "..s.." "..d)
+    return doit("btrfs subvolume snapshot -r "..s.." "..d.." 2>&1")
 end
 
 --[[
@@ -840,7 +869,7 @@ local function applyKeepPolicy(list, keeps, name, path)
     info(2, "Removing Subvolumes")
     for _,v in ipairs(list) do
         if not keeps[v] then
-            btrfs_sv_delete(path.."/"..name.."."..v)
+            assert(btrfs_sv_delete(path.."/"..name.."."..v), btrbu_error)
         end
     end
 end
@@ -862,6 +891,69 @@ local function pathFixup(path)
     return path
 end
 
+--[[
+    this function is used as a coroutine for the hooks functionality.
+    in order to not block the rest of the program if the hook happens to be a long running program,
+    like backing up snapshots to a remote repository, we append a "touch" shell command that will
+    create a temporary file we can wait on.  Once that file appears, we know that the main hook has
+    completed and we can safely continue.
+--]]
+local function hook ( cmd, inst )
+    if not runtime.dryrun then
+        info(1, "Starting hook:  "..cmd)
+        local semfile = "/tmp/semfile"..inst
+        cmd = cmd.." ; touch "..semfile
+        local f = io.popen(cmd)
+        while 1 do
+            local sem = io.open(semfile)
+            if not sem then
+                coroutine.yield(0)
+            else
+                sem:close() -- semaphore file...
+                os.remove(semfile)
+                f:close() -- popen pipe ...
+                break
+            end
+        end
+    else
+        -- to at least let the coroutine do it's thing once, we'll just yield and then exit rather
+        -- than looping.  Alternatively, we could loop a set number of times so the coroutine stuff
+        -- can get exercised... 
+        info(3, "DRYRUN- hook to execute: "..cmd)
+        coroutine.yield(0)
+    end
+    return inst
+end
+
+--[[
+    an event handler of sorts for the hooks that might be running
+--]]
+local colist = {} -- table of coroutines- populated by the hook setup code for snaphooks or backuphooks
+local function handleHooks()
+    if #colist == 0 then
+        info(1, "No hooks running.")
+        return
+    end
+
+    info(1, "Waiting for hooks to complete...")
+    repeat
+        for i, codata in ipairs(colist) do
+            local status, r = coroutine.resume(codata.co)
+            if r~= 0 then
+                if not runtime.dryrun then
+                    info(1,"Hook Completed: "..codata.cmd)
+                else
+                    info(3,"DRYRUN Completed: "..codata.cmd)
+                end
+                table.remove(colist, i)
+            end
+        end
+    until #colist == 0
+end
+
+-- =============================================================================================
+-- this is where script execution actually starts.  Everything to this point has been prep work or 
+-- setup.  Now, we'll actually start working with the system to take snapshots 
 runtime.snapshot_dir = pathFixup(runtime.snapshot_dir)
 runtime.backup_dir = pathFixup(runtime.backup_dir)
 for name, path in pairs(runtime.subvolumes) do
@@ -921,7 +1013,7 @@ for name, path in pairs(runtime.subvolumes) do
                                runtime.snapshot_dir, 
                                name,
                                timestamp)
-    btrfs_sv_snapshot(path, dest)
+    assert(btrfs_sv_snapshot(path, dest), btrbu_error)
 end
 info(1,"Snapshots completed")
 info(1, "########################################")
@@ -933,6 +1025,26 @@ info(1, "########################################")
 -- between the name and timestamp.  We'll need that to help with pruning
 snaps = buildTbl(runtime.snapshot_dir, timestamp)
 
+-- run snaphooks now...
+if runtime.snaphooks then
+    print("SNAPHOOKS!")
+    for name, _ in pairs(runtime.subvolumes) do
+        if runtime.snaphooks[name] then
+            -- just make sure something is there
+            if #runtime.snaphooks[name] ~= 0 then
+                local r
+                local s = runtime.snapshot_dir.."/"..name.."."..timestamp
+                local hookcmd = runtime.snaphooks[name]:gsub("{snapshot}", s)
+                hookcmd = hookcmd:gsub("{archive}", name)
+                hookcmd = hookcmd:gsub("{timestamp}", timestamp)
+                hookcmd = hookcmd:gsub("{snapshotdir}", runtime.snapshot_dir)
+                table.insert(colist, { co = coroutine.create(hook), cmd = hookcmd })
+                coroutine.resume(colist[#colist].co, hookcmd, #colist)
+            end
+        end        
+    end
+end
+
 -- check if we're doing snapshots only
 if runtime.snaps_only then
     -- yup, snaps only, so all done
@@ -943,6 +1055,7 @@ if runtime.snaps_only then
         applyKeepPolicy(snaps[name], keeps, name, runtime.snapshot_dir)
     end
 
+    handleHooks()
     info(1,"Done")
     return
 end
@@ -950,7 +1063,8 @@ end
 -- doing snapshots AND backups...
 backups = buildTbl(runtime.backup_dir, timestamp)
 
--- now backup and prune our snapshots, and do our incremental backups
+-- snapshots are done, now for each snapshot determine if we should perform an incremental or full backup
+-- after the backup is completed, prune the snapshots and the backups for this particular subvolume
 for name, _ in pairs(runtime.subvolumes) do
 
     -- setup some path strings
@@ -975,12 +1089,12 @@ for name, _ in pairs(runtime.subvolumes) do
     -- getParent chooses the most recent timestamp for the incremental backup
     if not parent_ts then 
         info(1, "No valid parent found, doing full backup")
-        btrfs_send(nil, source, dest)
+        assert(btrfs_send(nil, source, dest), btrbu_error)
     else
         local parent_path = snapshot_prefix..parent_ts
         info(1, "Doing incremental backup for subvolume: "..runtime.subvolumes[name])
         info(2, "Parent Timestamp: "..parent_ts)
-        btrfs_send(parent_path, source, dest)
+        assert(btrfs_send(parent_path, source, dest), btrbu_error)
         info(1, "Done")
     end
 
@@ -999,4 +1113,5 @@ for name, _ in pairs(runtime.subvolumes) do
 end
 
 info(1, "\nBackups completed.  Archive Timestamp: "..timestamp)
+handleHooks()
 

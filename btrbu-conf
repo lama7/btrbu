@@ -19,8 +19,8 @@ return {
     snapshot_dir = "/pool/snapshots",
     backup_dir = "/backup",
 
-    -- for snapshots
-    keep_daily = 1,
+    -- for pruning
+    keep_daily = 3,
     keep_weekly = 1,
     keep_monthly = 1,
 }

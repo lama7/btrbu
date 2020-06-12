@@ -14,7 +14,7 @@ For simple snapshot and backup needs, a command can be as simple as:
 
     btrbu --snapshot-dir=/pool/snapshots --backup-dir=/backup archive1=/path/to/subvolume
 
-Assuming a start from nothing, this will take a snapshot of `/path/to/subvolume` and place it in `/poolsnapshots` with a timestamp suffix.  So the snapshot name will be of the form `archive.YYYYMMddhhmm`.  This snapshot will then be used to send a full backup to `/backup`. 
+Assuming a start from nothing, this will take a snapshot of `/path/to/subvolume` and place it in `/pool/snapshots` with a timestamp suffix.  So the snapshot name will be of the form `archive.YYYYMMddhhmm`.  This snapshot will then be used to send a full backup to `/backup`. 
 
 Subsequent use of this same command will result in incremental backups which will just advance the timestamp associated with the archive.  The default keep policy is 1 day, so only 1 snapshot and backup are kept.  See [keep policy][] below for how to change the keep behavior.
 
