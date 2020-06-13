@@ -145,12 +145,14 @@ Configuration files and command line options can be mixed and matched as well.  
     ]]
 }
 
+-- setup some global tables we'll need
 local runtime = {}
 runtime.subvolumes = {}
 local options = {}
 
--- do some rudimentary command line parsing
 --[[
+    do some rudimentary command line parsing
+
     Options are denoted by a '--' prefix and are of the form "--option" or "--option=value"
     Archive/subvolume pairs are of the form "archive=subvolume"
     We try to remove remove white space if it is used when the command is invoked
@@ -158,9 +160,19 @@ local options = {}
 --]]
 local i = 1
 local o = 1
+-- lua parses command line arguments by space so "thisis=oneargument" and "thisis = 3arguments" 
+-- we're trying to give maximum flexibility to the user on the command line so we try to key off of
+-- the '=' sign.  For now, we will happily parse the arguments whether they require an '=' or not.
+-- when it comes time to process each argument we will sort out if an option can be assigned or 
+-- not
+-- the process here is to find all "--opt = val" and "--opt" permutations with spaces and turn them
+-- all into "opt=val" or "opt"
+-- is this the start of an option argument? (leading '--')
+-- also- after the option comes "name=path" pairs subject to the same permutations as the 
+-- options/arguments.  The rule is options first, then "name=value" pairs after.  Any options,
+-- denoted with leading '--', found after the first "name=value" is an error.
 while i <= #arg do
     local m = arg[i]:match("^%-%-(.+)")
-    -- is this the start of an option argument? (leading '--')
     if o and m then
         options[o] = m
         i = i + 1
@@ -197,18 +209,19 @@ while i <= #arg do
                 o = o + 1
             -- chk for leading '--'...
             elseif arg[i]:find("^%-%-.*") then
+                -- rather than deal with it here, loop back to the top and process it as a new option
                 o = o + 1
             else
-                -- next arg doesn't have '=' and isn't another option, so it
-                -- must be the first archive/subvolume pair
+                -- next arg doesn't have '=' and isn't another option, so it we'll assume it is the
+                -- first archive/subvolume pair
+                -- AFTER THIS - ANYMORE OPTIONS FOUND WILL CAUSE AN ERROR
                 o = nil
             end
-        else
-            -- option match had an '=' in it, so stuff it and on to the next
-            -- option
+        else 
+            -- option match had an '=' in it but not trailing, so stuff it and on to the next one
             o = o + 1
         end -- elseif not m:find...
-    else
+    else -- not o or not m
         -- not a leading '--' so we're looking for "archive=subvolume"
         -- variants, also- no more options allowed after this
         if m then
@@ -216,15 +229,19 @@ while i <= #arg do
             print("ALL options must precede archive/subvolume pairs.")
             return
         end
-        
+       
+        -- since we are now processing "name=value" pairs, we'll take advantage and put those in their
+        -- final table
         if arg[i]:find("=") then
             m,v = arg[i]:match("^(.+)=(.+)$")
             if m then
                 runtime.subvolumes[m] = v
                 i = i + 1
             else
+                -- check for trailing '='...
                 m = arg[i]:match("^(.+)=$") 
                 if m then
+                    -- trailing '=', so make sure there's another argument, stuff it and continue
                     i = i + 1
                     if not arg[i] then
                         print("No subvolume specified for archive: "..m)
@@ -233,6 +250,8 @@ while i <= #arg do
                     runtime.subvolumes[m] = arg[i]
                     i = i + 1
                 else
+                    -- there's some kind of error on the command line since we have an leading '='
+                    -- but nothing to assign it to
                     print("No archive specified for subvolume: "..arg[i])
                     return
                 end
@@ -241,16 +260,12 @@ while i <= #arg do
             -- no '=' here, assume this is the archive name
             local archive = arg[i]
             i = i + 1
-            if not arg[i] then
+            -- make sure there's another argument and that it has an '=' in it
+            if not arg[i] or not arg[i]:find("=") then
                 print("No subvolume specified for archive: "..archive)
                 return
             end
 
-            -- now find the rest of the archive/subvolume pair
-            if not arg[i]:find("=") then
-                print("No subvolume specified for archive: "..archive)
-                return
-            end
             if arg[i] == "=" then
                 -- just an '=' sign, so grab the next argument
                 i = i + 1
@@ -375,7 +390,8 @@ if settings then
  
     -- setup snaphooks and backuphooks if present.  Note that these are available ONLY from a config
     -- file.
-    runtime.snaphooks = cf_settings.snaphooks
+    runtime.presnaphooks = cf_settings.presnaphooks
+    runtime.postsnaphooks = cf_settings.postsnaphooks
     runtime.backuphooks = cf_settings.backuphooks
 
     -- go through and setup config file settings- if the option was already 
@@ -495,8 +511,10 @@ if ( not runtime.snapshot_dir or not runtime.backup_dir or next(runtime.subvolum
 end
 
 -- ########################################
--- btrfs command functions
 
+--[[
+    used to handle verbosity during runtime
+--]]
 local function info(level, text)
     if runtime.verbose ~= 0 and runtime.verbose >= level then
         print(text)
@@ -894,11 +912,11 @@ end
 --[[
     this function is used as a coroutine for the hooks functionality.
     in order to not block the rest of the program if the hook happens to be a long running program,
-    like backing up snapshots to a remote repository, we append a "touch" shell command that will
-    create a temporary file we can wait on.  Once that file appears, we know that the main hook has
-    completed and we can safely continue.
+    like backing up snapshots to a remote repository, we append a "touch" shell command to the hook 
+    that will create a temporary file we can wait on.  Once that file appears, we know that the main 
+    hook has completed and we can safely continue.
 --]]
-local function hook ( cmd, inst )
+local function hookFunc ( cmd, inst )
     -- generate a random number for the semaphore file name...
     local semfile = "/tmp/semfile"..math.random(os.time()+os.clock()*1000000)
     local f = io.open(semfile)
@@ -938,18 +956,41 @@ local function hook ( cmd, inst )
 end
 
 --[[
+--]]
+local hooklist = {} -- table of coroutines- populated by hook setup code for snaphooks or backuphooks
+local function setupHook(name, hook, ts, subs)
+    -- a table of substitutions we allow in the hook commands that might be useful when crafting a 
+    -- hook for backup purposes
+    local sublist = {
+    snapshot = function (s) return s:gsub("{snapshot}", runtime.snapshot_dir.."/"..name.."."..ts) end,
+    backup = function (s) return s:gsub("{backup}", runtime.backup_dir.."/"..name.."."..ts) end,
+    archive = function (s) return s:gsub("{archive}", name) end,
+    timestamp = function (s) return s:gsub("{timestamp}", ts) end,
+    snapshotdir = function (s) return s:gsub("{snapshotdir}", runtime.snapshot_dir) end,
+    backupdir = function (s) return s:gsub("{backupdir}", runtime.backup_dir) end,    
+    }    
+    -- just make sure something is there
+    if #hook ~= 0 then
+        for _, p in ipairs(subs) do
+            hook = sublist[p](hook)   
+        end
+        table.insert(hooklist, { co = coroutine.create(hookFunc), cmd = hook })
+        coroutine.resume(hooklist[#hooklist].co, hook, #hooklist) -- start it
+    end
+end
+
+--[[
     an event handler of sorts for the hooks that might be running
 --]]
-local colist = {} -- table of coroutines- populated by the hook setup code for snaphooks or backuphooks
 local function handleHooks()
-    if #colist == 0 then
+    if #hooklist == 0 then
         info(1, "No hooks running.")
         return
     end
 
     info(1, "Waiting for hooks to complete...")
     repeat
-        for i, codata in ipairs(colist) do
+        for i, codata in ipairs(hooklist) do
             local status, r = coroutine.resume(codata.co)
             if r~= 0 then
                 if not runtime.dryrun then
@@ -957,10 +998,10 @@ local function handleHooks()
                 else
                     info(3,"DRYRUN Completed: "..codata.cmd)
                 end
-                table.remove(colist, i)
+                table.remove(hooklist, i)
             end
         end
-    until #colist == 0
+    until #hooklist == 0
 end
 
 -- =============================================================================================
@@ -972,7 +1013,7 @@ for name, path in pairs(runtime.subvolumes) do
    runtime.subvolumes[name] = pathFixup(path)
 end
 
--- assemble a timestamp to use as a suffix
+-- assemble the timestamp to use as a suffix for this run of btrbu
 local t = os.date("*t")
 local timestamp = string.format("%u%02u%02u%02u%02u", 
                                 t.year, 
@@ -981,6 +1022,7 @@ local timestamp = string.format("%u%02u%02u%02u%02u",
                                 t.hour, 
                                 t.min)
 
+-- COMMAND LINE PRUNE PROCESSING
 -- if prune option is selected, perform it and exit
 if runtime.prune then
     if runtime.prune ~= 1 then
@@ -1017,6 +1059,21 @@ if runtime.prune then
     return
 end
 
+-- PRE-SNAPSHOT HOOK PROCESSING
+-- check for pre-snapshot hooks
+math.randomseed(os.time()+os.clock()*1000000)  -- random number generator is used in hook function
+info(1,"Checking for Pre-Snapshot Hooks:")
+if runtime.presnaphooks and #runtime.presnaphooks ~= 0 then 
+    for _, hook in ipairs(runtime.presnaphooks) do
+       setupHook(name, hook, timestamp, { "timestamp", "snapshotdir", "backupdir"})
+    end
+    -- presnap hooks are allowed to finish before proceeding to snapshotting
+    handleHooks()
+else
+    info(1,"No Pre-Snapshot Hooks")
+end
+
+-- SNAPSHOTS
 -- start by taking new snapshots of the subvolumes specified 
 info(1, "########################################")
 info(1, "Taking snapshots.....Timestamp:  "..timestamp)
@@ -1035,27 +1092,19 @@ info(1, "########################################")
 -- specifically "name.YYYYMMDDhhmm"
 -- create a table from the from the snapshot directory, splitting the name up 
 -- between the name and timestamp.  We'll need that to help with pruning
+-- THIS TABLE WILL INCLUDE THE JUST CREATED SNAPSHOTS
 snaps = buildTbl(runtime.snapshot_dir, timestamp)
 
--- run snaphooks now...
-if runtime.snaphooks then
-    print("SNAPHOOKS!")
-    math.randomseed(os.time()+os.clock()*1000000)  -- random number generator is used in hook function
+-- POST-SNAPSHOT HOOK PROCESSING
+info(1,"Checking for Post-Snapshot Hooks:")
+if runtime.postsnaphooks and next(runtime.postsnaphooks) then 
     for name, _ in pairs(runtime.subvolumes) do
-        if runtime.snaphooks[name] then
-            -- just make sure something is there
-            if #runtime.snaphooks[name] ~= 0 then
-                local r
-                local s = runtime.snapshot_dir.."/"..name.."."..timestamp
-                local hookcmd = runtime.snaphooks[name]:gsub("{snapshot}", s)
-                hookcmd = hookcmd:gsub("{archive}", name)
-                hookcmd = hookcmd:gsub("{timestamp}", timestamp)
-                hookcmd = hookcmd:gsub("{snapshotdir}", runtime.snapshot_dir)
-                table.insert(colist, { co = coroutine.create(hook), cmd = hookcmd })
-                coroutine.resume(colist[#colist].co, hookcmd, #colist)
-            end
+        if runtime.postsnaphooks[name] then
+           setupHook(name, runtime.postsnaphooks[name], timestamp, { "snapshot", "archive", "timestamp", "snapshotdir" }) 
         end        
     end
+else
+    info(1,"No Post-Snapshot Hooks")
 end
 
 -- check if we're doing snapshots only
@@ -1073,11 +1122,14 @@ if runtime.snaps_only then
     return
 end
 
+-- BACKUPS
 -- doing snapshots AND backups...
 backups = buildTbl(runtime.backup_dir, timestamp)
 
--- snapshots are done, now for each snapshot determine if we should perform an incremental or full backup
+-- snapshots are done, now for each snapshot determine if we should perform an incremental or full
+-- backup
 -- after the backup is completed, prune the snapshots and the backups for this particular subvolume
+-- and run any hooks associated with this backup
 for name, _ in pairs(runtime.subvolumes) do
 
     -- setup some path strings
@@ -1099,7 +1151,6 @@ for name, _ in pairs(runtime.subvolumes) do
     end
     info(1, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     -- in no valid parent, then perform a full backup, otherwise perform an incremental backup
-    -- getParent chooses the most recent timestamp for the incremental backup
     if not parent_ts then 
         info(1, "No valid parent found, doing full backup")
         assert(btrfs_send(nil, source, dest), btrbu_error)
@@ -1118,13 +1169,23 @@ for name, _ in pairs(runtime.subvolumes) do
     -- now prune the snapshot and backup directories
     showKeeps(name, snapkeeps, backupkeeps, timestamp)
 
-    -- apply keep policy to snapshots
+    -- apply keep policy
     applyKeepPolicy(snaps[name], snapkeeps, name, runtime.snapshot_dir)
     applyKeepPolicy(backups[name], backupkeeps, name, runtime.backup_dir)
+
+    -- the btrfs backup should be completed now, startup any hooks associated with this
+    -- backup
+    info(1, "Checking for backup hook for archive: "..name)
+    if runtime.backuphooks and runtime.backuphooks[name] then
+        setupHook(name, runtime.backuphooks[name], timestamp, { "snapshot", "backup", "archive", "timestamp", "snapshotdir", "backupdir" })
+    else
+        info(1, "No backup hook for archive: "..name)
+    end
 
     info(1, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 end
 
 info(1, "\nBackups completed.  Archive Timestamp: "..timestamp)
+-- allow any unfinished hooks to complete before exiting the program
 handleHooks()
 
