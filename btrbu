@@ -58,6 +58,12 @@ If specified only snapshots will be taken, no backups will be used.
 ]],
                      args = 0,
     },
+    keep_hourly = {
+                     help_text = [[
+Number of hourly backups to be kept. Hourlies kept have 3600s between them.
+]],
+                     args = 1,
+    },
     keep_daily = {
                      help_text = [[
 Number of daily backups to be kept. Dailies kept have 24 hours between them.
@@ -72,7 +78,13 @@ Number of weeklys backups to be kept. Weeklies kept have (7*24) hours between th
     },
     keep_monthly = {
                      help_text = [[
-Number of monthly backups to be kept.  Monthlies kept have (4*7*24) hours between them.
+Number of monthly backups to be kept.  Monthly keeps are based on the calendar month.
+]],
+                     args = 1,
+    },
+    keep_yearly = {
+                     help_text = [[
+Number of yearly backups to be kept.  
 ]],
                      args = 1,
     },
@@ -403,6 +415,9 @@ if settings then
         runtime.backup_dir = cf_settings.backup_dir
     end
 
+    if not runtime.keep_hourly then
+        runtime.keep_hourly = cf_settings.keep_hourly or 0
+    end
     if not runtime.keep_daily then
         runtime.keep_daily = cf_settings.keep_daily or 1
     end
@@ -411,6 +426,9 @@ if settings then
     end
     if not runtime.keep_monthly then
         runtime.keep_monthly = cf_settings.keep_monthly or 0
+    end
+    if not runtime.keep_yearly then
+        runtime.keep_yearly = cf_settings.keep_yearly or 0
     end
     if not runtime.snaps_only then
         runtime.snaps_only = cf_settings.snaps_only
@@ -708,6 +726,16 @@ end
 local function bldKeepList(ts_list)
     -- these are some support functions that only bldKeepList uses...
     --################################################################################
+    local function prevHour(ts, hrs_cnt)
+        local t = os.date("*t", tstoTime(ts) - (hrs_cnt*3600))
+        return string.format("%u%02u%02u%02u%02u",
+                             t.year,
+                             t.month,
+                             t.day,
+                             t.hour,
+                             59)
+    end
+
     -- returns a formatted timestamp for days_cnt days ago.
     -- The timestamp is set to the final minute of that day
     local function prevDay(ts, days_cnt)
@@ -740,10 +768,10 @@ local function bldKeepList(ts_list)
     -- return last day of month that is months_cnt back
     -- it mimics the functionality of the prevWeek function, but works on months
     local function prevMonth(ts, months_cnt)
-        local t = os.date("*t",tstoTime(ts))
-        local chk_lastday = os.date("*t",os.time({ year = t.year,
-                                                   month = t.month + 1,
-                                                   day = 0 }))
+        local t = os.date("*t", tstoTime(ts))
+        local chk_lastday = os.date("*t", os.time({ year = t.year,
+                                                    month = t.month + 1,
+                                                    day = 0 }))
         -- if months_cnt == 0 and the entry timestamp is the final day of the 
         -- month, nothing to do.  If entry timestamp is not the final day, return
         -- the final day of the previous month.  If months_cnt ~= 0 the return
@@ -756,7 +784,7 @@ local function bldKeepList(ts_list)
                                          day = 0,
                                          hour = 23,
                                          min = 59 }
-                                       )
+                                     )
                     )
         elseif t.day ~= chk_lastday.day then
             t = os.date("*t", os.time( { year = t.year,
@@ -764,7 +792,7 @@ local function bldKeepList(ts_list)
                                          day = 0,
                                          hour = 23,
                                          min = 59 }
-                                       )
+                                     )
                     )
         end
 
@@ -775,14 +803,45 @@ local function bldKeepList(ts_list)
                              t.hour,
                              t.min)
     end
+    
+    -- return last day of year that is years_cnt back
+    local function prevYear(ts, years_cnt)
+        local t = os.date("*t", tstoTime(ts))
+        if years_cnt ~= 0 then
+            t.year = t.year - years_cnt
+            t.month = 12
+            t.day = 31
+            t.hour = 23
+            t.min = 59
+        elseif t.month ~= 12 and t.day ~= 31 then
+            t.year = t.year - 1
+            t.month = 12
+            t.day = 31
+            t.hour = 23
+            t.min = 59
+        end
+
+        return string.format("%u%02u%02u%02u%02u",
+                             t.year,
+                             t.month,
+                             t.day,
+                             t.hour,
+                             t.min)
+    end
+
 
     --################################################################################
     -- start of bldKeepList code...
     local keeps = {}
     local oldest_keep = nil
+    local total_keeps = runtime.keep_hourly +
+                        runtime.keep_daily +
+                        runtime.keep_weekly +
+                        runtime.keep_monthly +
+                        runtime.keep_yearly
     -- check for case of 0 keeps specified.  In this instance, we should always return the latest 
     -- timestamp as the only keep
-    if runtime.keep_daily + runtime.keep_weekly + runtime.keep_monthly == 0 then
+    if total_keeps == 0 then
         -- if this is a manual prune (prune options specified on command line, then nothing to do
         if runtime.prune then 
             return nil
@@ -801,19 +860,35 @@ local function bldKeepList(ts_list)
     -- the prune after snapshots/backups have been completed.
     -- 1st, check the case where only 1 keep is specified at any time interval. In that case. we're 
     -- already done since we've already kept the most recent timestamp
-    if runtime.keep_daily + runtime.keep_weekly + runtime.keep_monthly == 1 then
+    if total_keeps == 1 then
         return keeps
     end
-    -- more than 1 keep specified, so start at the daily interval and work our way out... 
+    -- more than 1 keep specified, so start at the hourly interval and work our way out... 
     -- REMEMBER: WE ALREADY HAVE THE MOST RECENT TIMESTAMP AS A KEEP AT THIS POINT
+
+    if runtime.keep_hourly ~= 0 then 
+        if runtime.keep_hourly == 1 then
+            oldest_keep = ts_list[#ts_list]
+        else
+            oldest_keep = getKeeps(ts_list,
+                                   keeps,
+                                   runtime.keep_hourly - 1, -- -1 for current ts
+                                   prevHour(ts_list[#ts_list], 1),
+                                   prevHour
+                                  )
+        end
+    end
     if runtime.keep_daily ~= 0 then
-        if runtime.keep_daily == 1 then
+        local dkeepn = runtime.keep_daily
+        -- if hourly keeps is 0, then the current timestamp counts against the daily keeps
+        if runtime.keep_hourly == 0 then dkeepn = dkeepn - 1 end
+        if dkeepn == 0 then
             -- already have the daily keep, so setup oldest_keep and continue
             oldest_keep = ts_list[#ts_list]
         else
             oldest_keep = getKeeps(ts_list,
                                    keeps,
-                                   runtime.keep_daily-1, -- -1 for the current timestamp
+                                   dkeepn,
                                    prevDay(ts_list[#ts_list], 1),
                                    prevDay
                                   )
@@ -821,9 +896,8 @@ local function bldKeepList(ts_list)
     end
     if runtime.keep_weekly ~= 0 then
         local wkeepn = runtime.keep_weekly
-        -- if daily keeps is 0, then the current timestamp counts against the weekly keeps
-        -- otherwise, proceed as normal
-        if runtime.keep_daily == 0 then wkeepn = wkeepn - 1 end
+        -- if no previous keeps (hourly and daily  are 0) then current ts counts as weekly
+        if runtime.keep_hourly + runtime.keep_daily == 0 then wkeepn = wkeepn - 1 end
         if wkeepn == 0 then
             -- means we keep 1 weekly and the current timestamp is that keep, so setup
             -- oldest keep and continue
@@ -839,15 +913,35 @@ local function bldKeepList(ts_list)
     end
     if runtime.keep_monthly ~= 0 then
         local mkeepn = runtime.keep_monthly
-        -- if there were no daily or weekly keeps, then the current timestamp counts against
+        -- if there were no previous keeps then the current timestamp counts against
         -- the monthly keep
-        if runtime.keep_daily + runtime.keep_weekly == 0 then mkeepn = mkeepn - 1 end
-        if mkeepn ~= 0 then
+        if runtime.keep_hourly + runtime.keep_daily + runtime.keep_weekly == 0 then 
+            mkeepn = mkeepn - 1 
+        end
+        if mkeepn == 0 then
+            -- means only 1 monthly keep and the current timestamp is that keep
+            oldest_keep = ts_list[#ts_list]
+        else
+            oldest_keep = getKeeps(ts_list,
+                                   keeps,
+                                   mkeepn,
+                                   prevMonth(prevDay(oldest_keep or ts_list[#ts_list], 1), 0),
+                                   prevMonth
+                                  )
+        end
+    end
+    if runtime.keep_yearly ~= 0 then
+        local ykeepn = runtime.keep_yearly
+        -- if no prior keeps, then current timestamp counts against yearly keeps
+        if runtime.keep_hourly + runtime.keep_daily + runtime.keep_weekly + runtime.keep_monthly == 0 then
+            ykeepn = ykeepn - 1
+        end
+        if ykeepn ~= 0 then
             getKeeps(ts_list,
                      keeps,
-                     mkeepn,
-                     prevMonth(prevDay(oldest_keep or ts_list[#ts_list], 1), 0),
-                     prevMonth
+                     ykeepn,
+                     prevYear(prevDay(oldest_keep or ts_list[#ts_list], 1), 0),
+                     prevYear
                     )
         end
     end
@@ -916,16 +1010,17 @@ end
     that will create a temporary file we can wait on.  Once that file appears, we know that the main 
     hook has completed and we can safely continue.
 --]]
+local rnrange = os.time()+os.clock()*1000000
 local function hookFunc ( cmd, inst )
     -- generate a random number for the semaphore file name...
-    local semfile = "/tmp/semfile"..math.random(os.time()+os.clock()*1000000)
+    local semfile = "/tmp/semfile"..math.random(rnrange)
     local f = io.open(semfile)
     -- do our best to get a unique name for our semaphore file, if other instances of btrbu are
     -- started within a second(like from different cron configs), this might not be enough...
     -- depends on how we do with the seeding we use
     while f do
         f:close()
-        semfile = "/tmp/semfile"..math.random(os.time()+os.clock()*1000000)
+        semfile = "/tmp/semfile"..math.random(rnrange)
         f = io.open(semfile)
     end
 
