@@ -691,7 +691,7 @@ end
                        parameter and a interval count for the second
 --]]
 local function getKeeps(timestamps, keep_tbl, max_keeps, ts_start, interval)
-    -- scan backwards until through the list to find the starting timestamp
+    -- scan backwards through the list to find the starting timestamp
     local i = #timestamps
     while i ~= 0 and timestamps[i] > ts_start  do
        i = i - 1
@@ -807,13 +807,18 @@ local function bldKeepList(ts_list)
     -- return last day of year that is years_cnt back
     local function prevYear(ts, years_cnt)
         local t = os.date("*t", tstoTime(ts))
+        -- note that logic here is identical to months above
+        -- basically, if years_cnt == 0 and we're on the last day of the year, then this is the starting
+        -- point for a search and we'll just return it adjusted for the end of the day.  Otherwise, we'd
+        -- end up skipping an entire year
+        -- for any other condition, we return the final day of the previous year or years_cnt ago
         if years_cnt ~= 0 then
             t.year = t.year - years_cnt
             t.month = 12
             t.day = 31
             t.hour = 23
             t.min = 59
-        elseif t.month ~= 12 and t.day ~= 31 then
+        elseif t.month ~= 12 or t.day ~= 31 then
             t.year = t.year - 1
             t.month = 12
             t.day = 31
@@ -863,11 +868,13 @@ local function bldKeepList(ts_list)
     if total_keeps == 1 then
         return keeps
     end
+
     -- more than 1 keep specified, so start at the hourly interval and work our way out... 
     -- REMEMBER: WE ALREADY HAVE THE MOST RECENT TIMESTAMP AS A KEEP AT THIS POINT
-
     if runtime.keep_hourly ~= 0 then 
         if runtime.keep_hourly == 1 then
+            -- if only 1 keep at thr shortest interval, then we already have it- it's the most recent 
+            -- timestamp in the list.  So setup oldest_keep and move on to the next time interval
             oldest_keep = ts_list[#ts_list]
         else
             oldest_keep = getKeeps(ts_list,
@@ -957,7 +964,7 @@ local function showKeeps(name, snapkeeps, backupkeeps, ts)
     info(1, "Archive: "..name)
     info(1, "Timestamp: "..ts)
     info(1, "Keep Policy:")
-    info(1, "\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly")
+    info(1, "\t"..runtime.keep_hourly.." hourly\n\t"..runtime.keep_daily.." daily\n\t"..runtime.keep_weekly.." weekly\n\t"..runtime.keep_monthly.." monthly\n\t"..runtime.keep_yearly.." yearly")
     -- show what we're keeping
     -- only do this if verbose is sufficiently high, otherwise just wasting time
     if runtime.verbose >= 1 then
