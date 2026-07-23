@@ -585,6 +585,13 @@ local function btrfs_sv_snapshot(s,d)
 end
 
 --[[
+
+--]]
+local function btrfs_sv_show(sv)
+    return doit("btrfs subvolume show "..sv.." 2>&1")
+end
+
+--[[
     Ex:
     btrfs send -p cnkl77.2005052042/ cnkl77.2005152143/ | btrfs receive /backup/
 --]]
@@ -647,7 +654,7 @@ end
     tried to do a backup yet.  Btrfs needs a common archive to work with when generating incremental
     backups.
 --]]
-local function getParentfromKeeps(snapkeept, backupkeept, current_ts)
+local function getParentfromKeeps(name, snapkeept, backupkeept, current_ts)
     local max = nil
     for k, _ in pairs(snapkeept) do
         -- if this snapshot timestamp is in the backup list, it's a candidate, otherwise move on
@@ -657,6 +664,23 @@ local function getParentfromKeeps(snapkeept, backupkeept, current_ts)
             end
         end
     end
+    
+    if max then
+        -- final check- make sure the backup is a received version of the snapshot.  Need to access
+        -- UUID's to do this.  The Received-UUID of the backup should match the UUID of the snapshot
+        local bu_show = assert(btrfs_sv_show(runtime.backup_dir.."/"..name.."."..max), 
+                                "Error getting backup received UUID: "..runtime.backup_dir.."/"..name.."."..max)
+        local sv_show = assert(btrfs_sv_show(runtime.snapshot_dir.."/"..name.."."..max),
+                                "Error getting snapshot UUID: "..runtime.snapshot_dir.."/"..name.."."..max)
+                                
+        local bu_ruuid = bu_show:match("Received UUID:%s+([%x-]+)")
+        local sv_uuid = sv_show:match("UUID:%s+([%x-]+)")
+
+        info(2, "Backup Received UUID: "..bu_ruuid)
+        info(2, "Snapshot UUID: "..sv_uuid)
+
+        if bu_ruuid ~= sv_uuid then max = nil end
+    end
 
     return max
 end
@@ -665,7 +689,7 @@ end
     Returns identical value to above function, except it takes 2 lists instead of tables.  It just 
     massages the list into a table and then calls the above function for processing
 --]]
-local function getParentfromCurrent(snaplist, backuplist, current_ts)
+local function getParentfromCurrent(name, snaplist, backuplist, current_ts)
     local function toTbl(list)
         local t = {}
         for _,v in ipairs(list) do t[v] = 1 end
@@ -673,7 +697,7 @@ local function getParentfromCurrent(snaplist, backuplist, current_ts)
     end
 
     -- just taking advantage of common processing, we just massaged things to work with this function
-    return getParentfromKeeps(toTbl(snaplist), toTbl(backuplist), current_ts)
+    return getParentfromKeeps(name, toTbl(snaplist), toTbl(backuplist), current_ts)
 end
 
 --[[
@@ -988,7 +1012,8 @@ local function applyKeepPolicy(list, keeps, name, path)
     info(2, "Removing Subvolumes")
     for _,v in ipairs(list) do
         if not keeps[v] then
-            assert(btrfs_sv_delete(path.."/"..name.."."..v), btrbu_error)
+            assert(btrfs_sv_delete(path.."/"..name.."."..v), 
+                    "Error deleting subvolume: "..path.."/"..name.."."..v)
         end
     end
 end
@@ -1184,7 +1209,8 @@ for name, path in pairs(runtime.subvolumes) do
                                runtime.snapshot_dir, 
                                name,
                                timestamp)
-    assert(btrfs_sv_snapshot(path, dest), btrbu_error)
+    assert(btrfs_sv_snapshot(path, dest), 
+            "Error taking snapshot "..path.."to "..dest)
 end
 info(1,"Snapshots completed")
 info(1, "########################################")
@@ -1246,21 +1272,23 @@ for name, _ in pairs(runtime.subvolumes) do
     if backups[name] then 
         backupkeeps = bldKeepList(backups[name]) 
         if ( runtime.keep_daily + runtime.keep_monthly + runtime.keep_monthly ) == 0 then
-            parent_ts = getParentfromCurrent(snaps[name], backups[name], timestamp)
+            parent_ts = getParentfromCurrent(name, snaps[name], backups[name], timestamp)
         else
-            parent_ts = getParentfromKeeps(snapkeeps, backupkeeps, timestamp)
+            parent_ts = getParentfromKeeps(name, snapkeeps, backupkeeps, timestamp)
         end
     end
     info(1, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     -- in no valid parent, then perform a full backup, otherwise perform an incremental backup
     if not parent_ts then 
         info(1, "No valid parent found, doing full backup")
-        assert(btrfs_send(nil, source, dest), btrbu_error)
+        assert(btrfs_send(nil, source, dest), 
+                "Error sending: "..source.." to: "..dest)
     else
         local parent_path = snapshot_prefix..parent_ts
         info(1, "Doing incremental backup for subvolume: "..runtime.subvolumes[name])
         info(2, "Parent Timestamp: "..parent_ts)
-        assert(btrfs_send(parent_path, source, dest), btrbu_error)
+        assert(btrfs_send(parent_path, source, dest), 
+                "Error sending: "..source.." to: "..dest.."with parent subvolume "..parent_path)
         info(1, "Done")
     end
 
