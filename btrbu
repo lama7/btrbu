@@ -1045,14 +1045,14 @@ end
 local rnrange = os.time()+os.clock()*1000000
 local function hookFunc ( cmd, inst )
     -- generate a random number for the semaphore file name...
-    local semfile = "/tmp/semfile"..math.random(rnrange)
+    local semfile = "/tmp/btrbu"..math.random(rnrange)
     local f = io.open(semfile)
     -- do our best to get a unique name for our semaphore file, if other instances of btrbu are
     -- started within a second(like from different cron configs), this might not be enough...
     -- depends on how we do with the seeding we use
     while f do
         f:close()
-        semfile = "/tmp/semfile"..math.random(rnrange)
+        semfile = "/tmp/btrbu"..math.random(rnrange)
         f = io.open(semfile)
     end
 
