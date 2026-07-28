@@ -588,7 +588,16 @@ end
 
 --]]
 local function btrfs_sv_show(sv)
-    return doit("btrfs subvolume show "..sv.." 2>&1")
+    local rs
+    -- this command onlyu interrogates the btrfs filesystem, it doesn't have any lasting effect
+    -- so we'll suspend the dryrun value, if it's set, to allow it to process then restore 
+    -- the dryrun afterwards so no system commands are done that matter like taking snapshots
+    -- or running hooks 
+    local tmp_dryrun = runtime.dryrun
+    runtime.dryrun = nil
+    rs = doit("btrfs subvolume show "..sv.." 2>&1")
+    runtime.dryrun = tmp_dryrun
+    return rs
 end
 
 --[[
@@ -994,8 +1003,11 @@ local function showKeeps(name, snapkeeps, backupkeeps, ts)
     if runtime.verbose >= 1 then
         local function displayKeeps(whichkeep,keeplist,path,suffix)
             info(1, whichkeep)
-            for k,_ in pairs(keeplist) do
-                info(1,"\t"..path.."/"..suffix.."."..k)
+            local t = {};
+            for k,_ in pairs(keeplist) do table.insert(t,k) end
+            table.sort(t)
+            for _,m in ipairs(t) do
+                info(1,"\t"..path.."/"..suffix.."."..m)
             end
         end
         displayKeeps("Keeping snapshots:", snapkeeps, runtime.snapshot_dir, name)
