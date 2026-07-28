@@ -720,10 +720,11 @@ end
              max_keeps- maximum number of keeps
              ts_start- seed timestamp when determining the slice
                        of timestamps from the tlist
-             interval- a function that takes a timestamp as its first
+             interval- a marker denoting a specific interval- h,d,w,m,y
+             interval_f- a function that takes a timestamp as its first
                        parameter and a interval count for the second
 --]]
-local function getKeeps(timestamps, keep_tbl, max_keeps, ts_start, interval)
+local function getKeeps(timestamps, keep_tbl, max_keeps, ts_start, interval, interval_f)
     -- scan backwards through the list to find the starting timestamp
     local i = #timestamps
     while i ~= 0 and timestamps[i] > ts_start  do
@@ -737,14 +738,14 @@ local function getKeeps(timestamps, keep_tbl, max_keeps, ts_start, interval)
     repeat
         -- at this point, i is index to the most recent timestamp for the
         -- current interval so record it
-        keep_tbl[timestamps[i]] = 1
+        keep_tbl[timestamps[i]] = interval
         -- setup return value
         oldest_keep = timestamps[i]
         keep_cnt = keep_cnt + 1
         if keep_cnt == max_keeps then return oldest_keep end
         -- get next most recent timestamp for the current interval (days,weeks,
         -- months)
-        local tsref = interval(timestamps[i], 1)
+        local tsref = interval_f(timestamps[i], 1)
         i = i - 1
         -- this loop skips timestamps between the recorded one (in oldest_keep) 
         -- and the next next valid timestamp returned by the interval function
@@ -885,7 +886,8 @@ local function bldKeepList(ts_list)
             return nil
         else
             -- not a manual prune, keep the latest timestamp
-            keeps[ts_list[#ts_list]] = 1
+            -- mark it as a daily keep... for now
+            keeps[ts_list[#ts_list]] = "d"
             return keeps
         end
     end
@@ -899,14 +901,16 @@ local function bldKeepList(ts_list)
     -- 1st, check the case where only 1 keep is specified at any time interval. In that case. we're 
     -- already done since we've already kept the most recent timestamp
     if total_keeps == 1 then
+        keeps[ts_list[#ts_list]] = "d"  -- mark it as a daily keep
         return keeps
     end
 
     -- more than 1 keep specified, so start at the hourly interval and work our way out... 
     -- REMEMBER: WE ALREADY HAVE THE MOST RECENT TIMESTAMP AS A KEEP AT THIS POINT
     if runtime.keep_hourly ~= 0 then 
+        keeps[ts_list[#ts_list]] = "h"
         if runtime.keep_hourly == 1 then
-            -- if only 1 keep at thr shortest interval, then we already have it- it's the most recent 
+            -- if only 1 keep at the shortest interval, then we already have it- it's the most recent 
             -- timestamp in the list.  So setup oldest_keep and move on to the next time interval
             oldest_keep = ts_list[#ts_list]
         else
@@ -914,12 +918,14 @@ local function bldKeepList(ts_list)
                                    keeps,
                                    runtime.keep_hourly - 1, -- -1 for current ts
                                    prevHour(ts_list[#ts_list], 1),
+                                   "h",
                                    prevHour
                                   )
         end
     end
     if runtime.keep_daily ~= 0 then
         local dkeepn = runtime.keep_daily
+        if keeps[ts_list[#ts_list]] == 1 then keeps[ts_list[#ts_list]] = "d" end
         -- if hourly keeps is 0, then the current timestamp counts against the daily keeps
         if runtime.keep_hourly == 0 then dkeepn = dkeepn - 1 end
         if dkeepn == 0 then
@@ -930,12 +936,14 @@ local function bldKeepList(ts_list)
                                    keeps,
                                    dkeepn,
                                    prevDay(ts_list[#ts_list], 1),
+                                   "d",
                                    prevDay
                                   )
         end
     end
     if runtime.keep_weekly ~= 0 then
         local wkeepn = runtime.keep_weekly
+        if keeps[ts_list[#ts_list]] == 1 then keeps[ts_list[#ts_list]] = "w" end
         -- if no previous keeps (hourly and daily  are 0) then current ts counts as weekly
         if runtime.keep_hourly + runtime.keep_daily == 0 then wkeepn = wkeepn - 1 end
         if wkeepn == 0 then
@@ -947,12 +955,14 @@ local function bldKeepList(ts_list)
                                    keeps,
                                    wkeepn,
                                    prevWeek(prevDay(oldest_keep or ts_list[#ts_list], 1), 0),
+                                   "w",
                                    prevWeek
                                   )
         end
     end
     if runtime.keep_monthly ~= 0 then
         local mkeepn = runtime.keep_monthly
+        if keeps[ts_list[#ts_list]] == 1 then keeps[ts_list[#ts_list]] = "m" end
         -- if there were no previous keeps then the current timestamp counts against
         -- the monthly keep
         if runtime.keep_hourly + runtime.keep_daily + runtime.keep_weekly == 0 then 
@@ -966,12 +976,14 @@ local function bldKeepList(ts_list)
                                    keeps,
                                    mkeepn,
                                    prevMonth(prevDay(oldest_keep or ts_list[#ts_list], 1), 0),
+                                   "m",
                                    prevMonth
                                   )
         end
     end
     if runtime.keep_yearly ~= 0 then
         local ykeepn = runtime.keep_yearly
+        if keeps[ts_list[#ts_list]] == 1 then keeps[ts_list[#ts_list]] = "y" end
         -- if no prior keeps, then current timestamp counts against yearly keeps
         if runtime.keep_hourly + runtime.keep_daily + runtime.keep_weekly + runtime.keep_monthly == 0 then
             ykeepn = ykeepn - 1
@@ -981,6 +993,7 @@ local function bldKeepList(ts_list)
                      keeps,
                      ykeepn,
                      prevYear(prevDay(oldest_keep or ts_list[#ts_list], 1), 0),
+                     "y",
                      prevYear
                     )
         end
@@ -1004,10 +1017,10 @@ local function showKeeps(name, snapkeeps, backupkeeps, ts)
         local function displayKeeps(whichkeep,keeplist,path,suffix)
             info(1, whichkeep)
             local t = {};
-            for k,_ in pairs(keeplist) do table.insert(t,k) end
+            for k,_ in pairs(keeplist) do table.insert(t, k) end
             table.sort(t)
             for _,m in ipairs(t) do
-                info(1,"\t"..path.."/"..suffix.."."..m)
+                info(1,"\t"..path.."/"..suffix.."."..m.." ("..keeplist[m]..")")
             end
         end
         displayKeeps("Keeping snapshots:", snapkeeps, runtime.snapshot_dir, name)
