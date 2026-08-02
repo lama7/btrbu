@@ -1034,11 +1034,12 @@ end
     Little helper function to consolidate some common processing
 --]]
 local function applyKeepPolicy(list, keeps, name, path)
-    info(2, "Removing Subvolumes")
     for _,v in ipairs(list) do
         if not keeps[v] then
-            assert(btrfs_sv_delete(path.."/"..name.."."..v), 
-                    "Error deleting subvolume: "..path.."/"..name.."."..v)
+            local sv = path.."/"..name.."."..v
+            info(1, "Removing subvolume "..sv)
+            assert(btrfs_sv_delete(sv), 
+                    "Error deleting subvolume: "..sv)
         end
     end
 end
