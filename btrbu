@@ -1314,7 +1314,7 @@ for name, _ in pairs(runtime.subvolumes) do
         info(1, "Doing incremental backup for subvolume: "..runtime.subvolumes[name])
         info(2, "Parent Timestamp: "..parent_ts)
         assert(btrfs_send(parent_path, source, dest), 
-                "Error sending: "..source.." to: "..dest.."with parent subvolume "..parent_path)
+                "Error sending: "..source.." to: "..dest.." with parent subvolume "..parent_path)
         info(1, "Done")
     end
 
