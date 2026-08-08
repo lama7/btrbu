@@ -542,12 +542,55 @@ end
 --[[
 
 --]]
+
+-- High-resolution wall-clock time (seconds since epoch, fractional).
+-- Works for durations of many days.
+local function now()
+    local f = io.popen("date +%s.%N 2>/dev/null")
+    if not f then
+        return os.time()
+    end
+    local t = f:read("*a")
+    f:close()
+    t = tonumber(t)
+    return t or os.time()
+end
+
+-- Format an elapsed time (in seconds) as a human-readable string.
+-- Handles multi-day spans cleanly.
+local function format_elapsed(seconds)
+    if seconds < 0 then seconds = 0 end
+    local days = math.floor(seconds / 86400)
+    seconds = seconds % 86400
+    local hours = math.floor(seconds / 3600)
+    seconds = seconds % 3600
+    local mins  = math.floor(seconds / 60)
+    local secs  = seconds % 60
+
+    if days > 0 then
+        return string.format("%dd %02dh %02dm %05.2fs", days, hours, mins, secs)
+    elseif hours > 0 then
+        return string.format("%dh %02dm %05.2fs", hours, mins, secs)
+    elseif mins > 0 then
+        return string.format("%dm %05.2fs", mins, secs)
+    else
+        return string.format("%.3fs", secs)
+    end
+end
+
 local btrbu_error = ""
 local function doit(cmd)
     if runtime.sudo then
         cmd = cmd:gsub("btrfs", "sudo -n btrfs")
     end
     info(2,cmd)
+
+    local is_send = cmd:find("btrfs send", 1, true)
+    if is_send then
+        info(1, "Starting btrfs send/receive...")
+    end
+
+    local start = now()
     local rs
     if not runtime.dryrun then
         fd = io.popen(cmd)
@@ -556,7 +599,15 @@ local function doit(cmd)
     else
         rs = "DRYRUN- no action performed"
     end
+    local elapsed = now() - start
+
     info(3,rs)
+
+    -- Report timing only for the (potentially long-running) send/receive
+    if is_send then
+        info(1, "btrfs send/receive took " .. format_elapsed(elapsed))
+    end
+
     -- look for any btrfs errors first
     btrbu_error = rs:match("ERROR:%s*(.*)")
     if not btrbu_error then
@@ -1306,7 +1357,7 @@ for name, _ in pairs(runtime.subvolumes) do
     info(1, "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     -- in no valid parent, then perform a full backup, otherwise perform an incremental backup
     if not parent_ts then 
-        info(1, "No valid parent found, doing full backup")
+        info(1, "No valid parent found, doing full backup for subvolume: "..runtime.subvolumes[name])
         assert(btrfs_send(nil, source, dest), 
                 "Error sending: "..source.." to: "..dest)
     else
