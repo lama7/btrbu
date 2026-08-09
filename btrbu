@@ -539,10 +539,6 @@ local function info(level, text)
     end
 end
 
---[[
-
---]]
-
 -- High-resolution wall-clock time (seconds since epoch, fractional).
 -- Works for durations of many days.
 local function now()
@@ -579,6 +575,9 @@ local function format_elapsed(seconds)
 end
 
 local btrbu_error = ""
+--[[
+  send the btrfs command to the shell via a popen
+--]]
 local function doit(cmd)
     if runtime.sudo then
         cmd = cmd:gsub("btrfs", "sudo -n btrfs")
@@ -605,7 +604,7 @@ local function doit(cmd)
 
     -- Report timing only for the (potentially long-running) send/receive
     if is_send then
-        info(1, "btrfs send/receive took " .. format_elapsed(elapsed))
+        info(1, "Elapsed btrfs send/receive time: " .. format_elapsed(elapsed))
     end
 
     -- look for any btrfs errors first
