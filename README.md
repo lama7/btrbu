@@ -58,7 +58,7 @@ Configuration files and command line options can be mixed and matched as well.  
 Keep Policy
 -----------
 
-btrbu uses a keep policy for snapshots similar to [borgbackup][].  It uses daily, weekly and monthly timeframes to determine what to keep.  The relevant options are `keep-daily`, `keep-weekly` and `keep-monthly` and the value assigned is the number of backups to keep at that particular timeframe. The timeframes are applied in ascending order and there is no overlap, meaning a snapshot/backup kept because of a daily keep doesn't count towards a weekly or monthly keep.  The keep is ALWAYS the most recent available for a given timeframe.
+btrbu uses a keep policy for snapshots similar to [borgbackup][].  It uses hourly, daily, weekly, monthly and yearly timeframes to determine what to keep.  The relevant options are `keep-hourly`, `keep-daily`, `keep-weekly`, `keep-monthly` and `keep-yearly` and the value assigned is the number of backups to keep at that particular timeframe. The timeframes are applied in ascending order and there is no overlap, meaning a snapshot/backup kept because of a daily keep doesn't count towards a weekly or monthly keep.  The keep is ALWAYS the most recent available for a given timeframe.
 
 When first starting up, weekly and monthly keeps will not apply until those timeframes become relevant.  Weekly timeframes are referenced from Saturday, meaning that weekly keeps won't be applied until a Saturday backup becomes available.  Similarly, monthly keeps will not apply until snapshots and backups are made in a new month, since daily and weekly keeps will initially satisfy a monthly requirement.
 
@@ -84,7 +84,7 @@ An example of a configuration file with a keep policy:
     }
 ```
 
-btrbu does NOT have a keep policy below a 1 day timeframe.  So multiple backups within the same day will be subject to pruning by any keep policy.  The most recent snapshot/backups from that day will be kept in those cases.
+btrbu does NOT have a keep policy below a 1 hour timeframe.  So multiple backups within the same hour will be subject to pruning by any keep policy.  The most recent snapshot/backups from that hour will be kept in those cases.
 
 [borgbackup]: https://borgbackup.org
 
